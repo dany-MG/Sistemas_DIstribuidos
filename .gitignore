@@ -1,0 +1,9 @@
+# Ejecutables de Windows
+*.exe
+*.dll
+
+# Archivos objeto y salidas por defecto en Linux/macOS
+*.o
+*.out
+*.so
+*.dylib
