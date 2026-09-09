@@ -7,3 +7,12 @@
 *.out
 *.so
 *.dylib
+
+node_modules/
+
+.env
+.env.local
+
+build/
+dist/
+
