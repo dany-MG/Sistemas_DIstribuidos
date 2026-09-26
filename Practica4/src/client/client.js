@@ -66,7 +66,7 @@ ws.on('open', () =>{
     ws.on('message',  (buffer) => {
         const command = JSON.parse(buffer.toString())
         if(command.type === 'ENGINEER_COMMAND'){
-            console.log(`\n[Radio Ingeniero] ${command.message}`)
+            console.log(`\n[${command.targetId} - Radio Ingeniero] ${command.message}`)
         }
     })
 

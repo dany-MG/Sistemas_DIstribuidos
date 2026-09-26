@@ -44,5 +44,5 @@ ws.on('open', () =>{
         }   
         ws.send(JSON.stringify(telemetria))
         lap++
-    }, 700)
+    }, 1000)
 })
