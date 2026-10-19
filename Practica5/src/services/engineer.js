@@ -102,5 +102,4 @@ await redisSub.subscribe('rmi_request_channel', async (message) =>{
             }));
         }
     }
-
 })
