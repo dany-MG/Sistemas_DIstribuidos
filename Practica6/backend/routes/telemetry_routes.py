@@ -5,7 +5,7 @@ from fastapi.responses import StreamingResponse
 from typing import List, Optional
 
 from database.connection import (
-    NODE_ID,
+    get_node_id,
     get_active_db_path,
     list_available_sessions,
     set_active_session,
@@ -42,7 +42,7 @@ def api_health_check():
     db_path = get_active_db_path()
     return {
         "status": "ok",
-        "node_id": NODE_ID,
+        "node_id": get_node_id(),
         "role": "api",
         "state_backend": state_store.backend_type,
         "active_session": db_path.name,
@@ -205,7 +205,7 @@ async def stream_telemetry(
                 yield f"data: {payload_json}\n\n"
                 await asyncio.sleep(0.2)
         except asyncio.CancelledError:
-            print(f"[SSE {NODE_ID}] Cliente '{client_id}' ({mode}) desconectado")
+            print(f"[SSE {get_node_id()}] Cliente '{client_id}' ({mode}) desconectado")
 
     return StreamingResponse(
         event_generator(),

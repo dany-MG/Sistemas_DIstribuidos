@@ -6,6 +6,7 @@ import threading
 import urllib.request
 import urllib.parse
 import redis
+from contextvars import ContextVar
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple
 
@@ -17,6 +18,37 @@ SHARED_STATE_FILE = Path(os.getenv("CLUSTER_STATE_FILE", "/tmp/lmu_paddock_clust
 # Identificador del nodo actual (API Node o Data Node)
 NODE_ID = os.getenv("NODE_ID", "api-node-1")
 NODE_ROLE = os.getenv("NODE_ROLE", "api")  # "api" | "data"
+
+# Tiempos de espera configurables (en la nube con poca CPU conviene aumentarlos)
+DATA_NODE_TIMEOUT = float(os.getenv("DATA_NODE_TIMEOUT", "0.35"))
+NODE_HEALTH_TIMEOUT = float(os.getenv("NODE_HEALTH_TIMEOUT", "0.25"))
+
+# Identidad del nodo por petición. Permite que varios servidores (puertos distintos)
+# convivan en un mismo proceso (modo nube) conservando cada uno su propio NODE_ID.
+_current_node_id: ContextVar[str] = ContextVar("lmu_current_node_id", default=NODE_ID)
+
+
+def get_node_id() -> str:
+    """Devuelve el identificador del nodo que está atendiendo la petición actual."""
+    return _current_node_id.get()
+
+
+class NodeIdentityMiddleware:
+    """
+    Middleware ASGI puro que asigna la identidad del nodo (ej. 'api-node-2')
+    durante todo el ciclo de vida de cada petición, incluyendo streams SSE.
+    """
+
+    def __init__(self, app, node_id: str):
+        self.app = app
+        self.node_id = node_id
+
+    async def __call__(self, scope, receive, send):
+        token = _current_node_id.set(self.node_id)
+        try:
+            await self.app(scope, receive, send)
+        finally:
+            _current_node_id.reset(token)
 
 # Catálogo de Nodos de API y Nodos de Datos (.duckdb) configurable por variables de entorno (Local / Docker / Cloud)
 DEFAULT_API_NODES = [
@@ -338,7 +370,7 @@ def fetch_from_data_nodes(
         url = f"{node['url']}{endpoint_path}{query_str}"
         try:
             req = urllib.request.Request(url, headers={"Accept": "application/json"})
-            with urllib.request.urlopen(req, timeout=0.35) as resp:
+            with urllib.request.urlopen(req, timeout=DATA_NODE_TIMEOUT) as resp:
                 if resp.status == 200:
                     data = json.loads(resp.read().decode("utf-8"))
                     return data, node["node_id"]
@@ -352,7 +384,7 @@ def check_node_health(url: str) -> bool:
     """Verifica rápidamente si un servidor (API Node o Data Node) está en línea."""
     try:
         req = urllib.request.Request(url, headers={"Accept": "application/json"})
-        with urllib.request.urlopen(req, timeout=0.25) as resp:
+        with urllib.request.urlopen(req, timeout=NODE_HEALTH_TIMEOUT) as resp:
             return resp.status == 200
     except Exception:
         return False

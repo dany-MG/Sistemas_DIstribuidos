@@ -1,0 +1,130 @@
+services:
+  # 1. Almacén Distribuido de Relojes (Sync/Independiente) y Clientes Conectados
+  redis:
+    image: redis:7-alpine
+    container_name: lmu-redis
+    ports:
+      - "6379:6379"
+    networks:
+      - paddock-net
+    restart: unless-stopped
+
+  # 2. Servidores Dedicados de Recursos .duckdb (Data Nodes)
+  data-node-1:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: lmu-data-node-1
+    command: ["uvicorn", "data_node_main:app", "--host", "0.0.0.0", "--port", "8011"]
+    environment:
+      - NODE_ID=data-node-1
+      - NODE_ROLE=data
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+    volumes:
+      - ./backend/data:/app/data:ro
+    ports:
+      - "8011:8011"
+    depends_on:
+      - redis
+    networks:
+      - paddock-net
+    restart: unless-stopped
+
+  data-node-2:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: lmu-data-node-2
+    command: ["uvicorn", "data_node_main:app", "--host", "0.0.0.0", "--port", "8012"]
+    environment:
+      - NODE_ID=data-node-2
+      - NODE_ROLE=data
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+    volumes:
+      - ./backend/data:/app/data:ro
+    ports:
+      - "8012:8012"
+    depends_on:
+      - redis
+    networks:
+      - paddock-net
+    restart: unless-stopped
+
+  # 3. Servidores de API y Streaming SSE (API Nodes)
+  api-node-1:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: lmu-api-node-1
+    command: ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
+    environment:
+      - NODE_ID=api-node-1
+      - NODE_ROLE=api
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - API_NODE_1_URL=http://api-node-1:8000
+      - API_NODE_2_URL=http://api-node-2:8001
+      - DATA_NODE_1_URL=http://data-node-1:8011
+      - DATA_NODE_2_URL=http://data-node-2:8012
+    volumes:
+      - ./backend/data:/app/data:ro
+    ports:
+      - "8000:8000"
+    depends_on:
+      - redis
+      - data-node-1
+      - data-node-2
+    networks:
+      - paddock-net
+    restart: unless-stopped
+
+  api-node-2:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: lmu-api-node-2
+    command: ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8001"]
+    environment:
+      - NODE_ID=api-node-2
+      - NODE_ROLE=api
+      - REDIS_HOST=redis
+      - REDIS_PORT=6379
+      - API_NODE_1_URL=http://api-node-1:8000
+      - API_NODE_2_URL=http://api-node-2:8001
+      - DATA_NODE_1_URL=http://data-node-1:8011
+      - DATA_NODE_2_URL=http://data-node-2:8012
+    volumes:
+      - ./backend/data:/app/data:ro
+    ports:
+      - "8001:8001"
+    depends_on:
+      - redis
+      - data-node-1
+      - data-node-2
+    networks:
+      - paddock-net
+    restart: unless-stopped
+
+  # 4. Frontend Astro + React (Pit Wall Dashboard)
+  frontend:
+    build:
+      context: ./frontend/paddock-dashboard
+      dockerfile: Dockerfile
+      args:
+        PUBLIC_API_NODE_1_URL: ${PUBLIC_API_NODE_1_URL:-}
+        PUBLIC_API_NODE_2_URL: ${PUBLIC_API_NODE_2_URL:-}
+    container_name: lmu-frontend
+    ports:
+      - "4321:4321"
+    depends_on:
+      - api-node-1
+      - api-node-2
+    networks:
+      - paddock-net
+    restart: unless-stopped
+
+networks:
+  paddock-net:
+    driver: bridge

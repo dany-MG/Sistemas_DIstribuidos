@@ -2,7 +2,7 @@ import json
 import time
 from typing import Dict, List, Optional
 from database.connection import (
-    NODE_ID,
+    get_node_id,
     DEFAULT_API_NODES,
     DEFAULT_DATA_NODES,
     state_store,
@@ -165,7 +165,7 @@ class TelemetryService:
                 url=n["url"],
                 status="online"
                 if (
-                    n["node_id"] == NODE_ID
+                    n["node_id"] == get_node_id()
                     or n["node_id"] in active_api_nodes
                     or check_node_health(f"{n['url']}/api/v1/health")
                 )
@@ -188,7 +188,7 @@ class TelemetryService:
                 client_id=str(info.get("client_id", cid)),
                 mode=str(info.get("mode", "sync")),
                 cursor_s=float(info.get("cursor_s", 0.0)),
-                api_node=str(info.get("api_node", NODE_ID)),
+                api_node=str(info.get("api_node", get_node_id())),
                 data_node=str(info.get("data_node", self.last_data_node_id)),
                 last_seen_ago_s=round(max(0.0, now - float(info.get("last_seen", now))), 1),
             )
@@ -196,7 +196,7 @@ class TelemetryService:
         ]
 
         return ClusterStatusResponse(
-            api_node_id=NODE_ID,
+            api_node_id=get_node_id(),
             state_backend=self.state.backend_type,
             active_session=str(cluster_state.get("active_session", "")),
             sync_cursor_s=round(float(cluster_state.get("sync_cursor", 0.0)), 2),
@@ -274,12 +274,12 @@ class TelemetryService:
             client_id=client_id,
             mode=normalized_mode,
             cursor_s=effective_time_sec,
-            api_node=NODE_ID,
+            api_node=get_node_id(),
             data_node=data_node_id,
         )
 
         return TelemetrySnapshot(
-            api_node_id=NODE_ID,
+            api_node_id=get_node_id(),
             data_node_id=data_node_id,
             playback_mode=normalized_mode,
             active_clients_count=active_clients_count,

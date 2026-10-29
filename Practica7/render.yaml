@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: lmu-paddock-dashboard
+    runtime: docker
+    plan: free
+    rootDir: Practica6
+    dockerfilePath: ./Dockerfile
+    envVars:
+      - key: PORT
+        value: 8080

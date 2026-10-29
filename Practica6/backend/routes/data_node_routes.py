@@ -1,7 +1,7 @@
 from typing import Dict
 from fastapi import APIRouter, Depends, HTTPException, Query
 from database.connection import (
-    NODE_ID,
+    get_node_id,
     get_active_db_path,
     list_available_sessions,
 )
@@ -38,7 +38,7 @@ def data_node_health():
     db_path = get_active_db_path()
     return {
         "status": "ok",
-        "node_id": NODE_ID,
+        "node_id": get_node_id(),
         "role": "data",
         "active_session": db_path.name,
         "available_sessions": list_available_sessions(),
@@ -49,23 +49,23 @@ def data_node_health():
 def get_raw_metadata(repo: TelemetryRepository = Depends(get_duckdb_repository)):
     try:
         return {
-            "node_id": NODE_ID,
+            "node_id": get_node_id(),
             "metadata": repo.get_session_metadata(),
             "frequencies": _get_cached_frequencies(repo),
         }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error en Data Node ({NODE_ID}) leyendo metadata: {e}")
+        raise HTTPException(status_code=500, detail=f"Error en Data Node ({get_node_id()}) leyendo metadata: {e}")
 
 
 @router.get("/setup")
 def get_raw_setup(repo: TelemetryRepository = Depends(get_duckdb_repository)):
     try:
         return {
-            "node_id": NODE_ID,
+            "node_id": get_node_id(),
             "setup_json": repo.get_car_setup(),
         }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error en Data Node ({NODE_ID}) leyendo setup: {e}")
+        raise HTTPException(status_code=500, detail=f"Error en Data Node ({get_node_id()}) leyendo setup: {e}")
 
 
 @router.get("/track-map")
@@ -76,11 +76,11 @@ def get_raw_track_map(
     try:
         coords = repo.get_track_map_coordinates(step=step)
         return {
-            "node_id": NODE_ID,
+            "node_id": get_node_id(),
             "coordinates": [[float(lat), float(lon)] for lat, lon in coords],
         }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error en Data Node ({NODE_ID}) leyendo track-map: {e}")
+        raise HTTPException(status_code=500, detail=f"Error en Data Node ({get_node_id()}) leyendo track-map: {e}")
 
 
 @router.get("/snapshot-bundle")
@@ -95,7 +95,7 @@ def get_raw_snapshot_bundle(
     try:
         frequencies = _get_cached_frequencies(repo)
         bundle = repo.get_snapshot_raw_bundle(current_time_sec=time_sec, frequencies=frequencies)
-        bundle["data_node_id"] = NODE_ID
+        bundle["data_node_id"] = get_node_id()
         return bundle
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Error en Data Node ({NODE_ID}) extrayendo bundle: {e}")
+        raise HTTPException(status_code=500, detail=f"Error en Data Node ({get_node_id()}) extrayendo bundle: {e}")
