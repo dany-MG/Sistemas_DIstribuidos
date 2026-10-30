@@ -62,15 +62,37 @@ export const registerTelemetryServiceWorker = async (): Promise<boolean> => {
     }
 };
 
+let _inMemoryClientId: string | null = null;
+
 export const getClientId = (): string => {
     if (typeof window === 'undefined') return 'ssr-client';
-    let cid = window.sessionStorage.getItem('lmu_paddock_client_id');
-    if (!cid) {
+    if (_inMemoryClientId) return _inMemoryClientId;
+
+    // Usamos window.name para que al recargar la misma pestaña conserve su ID,
+    // pero si el usuario duplica la pestaña o abre una nueva, reciba un ID único garantizado.
+    if (window.name && /^PIT-[A-Z0-9]{4}$/.test(window.name)) {
+        _inMemoryClientId = window.name;
+    } else {
         const rand = Math.random().toString(36).substring(2, 6).toUpperCase();
-        cid = `PIT-${rand}`;
-        window.sessionStorage.setItem('lmu_paddock_client_id', cid);
+        _inMemoryClientId = `PIT-${rand}`;
+        try {
+            window.name = _inMemoryClientId;
+        } catch {
+            // Ignoramos si el navegador restringe window.name
+        }
     }
-    return cid;
+    return _inMemoryClientId;
+};
+
+export const generateNewClientId = (): string => {
+    const rand = Math.random().toString(36).substring(2, 6).toUpperCase();
+    _inMemoryClientId = `PIT-${rand}`;
+    if (typeof window !== 'undefined') {
+        try {
+            window.name = _inMemoryClientId;
+        } catch {}
+    }
+    return _inMemoryClientId;
 };
 
 const BRAND_SLUG_RULES: Array<[string, string]> = [
@@ -212,7 +234,7 @@ async function fetchWithFailover(
 export const loadInitialSessionPackFast = async (
     preferredBaseUrl: string = API_NODES[0].baseUrl,
     dataNode: string = 'auto'
-): Promise<{ packData: any; source: 'sw_local_edge' | 'remote_server' }> => {
+): Promise<any> => {
     // 1. Carga inmediata desde el Service Worker / Edge CDN de Vercel (0 espera de cold start)
     try {
         const localResp = await fetch('/data/sebring_session_pack.json');
@@ -220,27 +242,27 @@ export const loadInitialSessionPackFast = async (
             const packData = await localResp.json();
             // Despertamos a Render en segundo plano sin bloquear la UI
             fetchWithFailover(`/health`, preferredBaseUrl, 15000).catch(() => {});
-            return { packData, source: 'sw_local_edge' };
+            return { ...packData, _source: 'sw_local_edge' };
         }
     } catch {
         // Si no existe localmente, consultamos al servidor remoto
     }
 
-    // 2. Consulta al servidor remoto
-    const params = new URLSearchParams({ step_hz: '5', data_node: dataNode });
+    // 2. Consulta al servidor remoto a 20 Hz
+    const params = new URLSearchParams({ step_hz: '20', data_node: dataNode });
     const remoteRes = await fetchWithFailover(`/session-pack?${params.toString()}`, preferredBaseUrl, 8000);
     if (remoteRes?.data) {
-        return { packData: remoteRes.data, source: 'remote_server' };
+        return { ...remoteRes.data, _source: 'remote_server' };
     }
 
-    return { packData: null, source: 'sw_local_edge' };
+    return null;
 };
 
 export const fetchRemoteSessionPack = async (
     preferredBaseUrl: string = API_NODES[0].baseUrl,
     dataNode: string = 'auto'
 ) => {
-    const params = new URLSearchParams({ step_hz: '5', data_node: dataNode });
+    const params = new URLSearchParams({ step_hz: '20', data_node: dataNode });
     const res = await fetchWithFailover(`/session-pack?${params.toString()}`, preferredBaseUrl, 10000);
     return res ? res.data : null;
 };
@@ -254,15 +276,20 @@ export const syncClientStateWithServer = async (
     clientId: string,
     mode: 'sync' | 'independent',
     cursorSec: number,
-    durationSec: number,
-    dataNode: string = 'auto'
+    dataNodeOrDuration: string | number = 'auto',
+    durationSec: number = 649.5
 ) => {
+    const resolvedDataNode =
+        typeof dataNodeOrDuration === 'string' ? dataNodeOrDuration : 'auto';
+    const resolvedDuration =
+        typeof dataNodeOrDuration === 'number' ? dataNodeOrDuration : durationSec;
+
     const params = new URLSearchParams({
         client_id: clientId,
         mode,
-        cursor_s: cursorSec.toFixed(2),
-        duration_s: durationSec.toFixed(2),
-        data_node: dataNode,
+        cursor_s: Number(cursorSec || 15.0).toFixed(2),
+        duration_s: Number(resolvedDuration || 649.5).toFixed(2),
+        data_node: resolvedDataNode,
     });
     const res = await fetchWithFailover(`/sync-state?${params.toString()}`, apiBaseUrl, 2200, {
         method: 'POST',

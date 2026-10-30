@@ -116,8 +116,9 @@ class PlaybackStateStore:
     def _default_state(self) -> Dict[str, Any]:
         return {
             "active_session": DEFAULT_DB_NAME,
-            "sync_cursor": 0.0,
+            "sync_cursor": 15.0,
             "sync_last_wall_ts": 0.0,
+            "sync_reset_ts": 0.0,
             "client_cursors": {},
             "clients": {},
         }
@@ -207,23 +208,23 @@ class PlaybackStateStore:
 
         def _mutate(state: Dict[str, Any]) -> float:
             if normalized_mode == "sync":
-                cursor = float(state.get("sync_cursor", 0.0))
+                cursor = float(state.get("sync_cursor", 15.0))
                 last_ts = float(state.get("sync_last_wall_ts", 0.0))
                 if advance:
-                    if last_ts <= 0.0 or (now - last_ts) > 2.5:
+                    if last_ts <= 0.0 or (now - last_ts) > 5.0:
                         delta = step_seconds
                     else:
                         delta = max(0.0, now - last_ts)
-                    # Solo avanzamos si ha pasado al menos 50ms para evitar que múltiples clientes sumen doble
-                    if delta >= 0.05 or last_ts <= 0.0:
+                    # Solo avanzamos si ha pasado al menos 40ms para evitar que múltiples clientes sumen doble
+                    if delta >= 0.04 or last_ts <= 0.0:
                         cursor = round(cursor + delta, 3)
                         state["sync_cursor"] = cursor
                         state["sync_last_wall_ts"] = now
                 return cursor
             else:
                 client_cursors = state.setdefault("client_cursors", {})
-                c_entry = client_cursors.get(client_id, {"cursor": 0.0, "last_ts": 0.0})
-                cursor = float(c_entry.get("cursor", 0.0))
+                c_entry = client_cursors.get(client_id, {"cursor": 15.0, "last_ts": 0.0})
+                cursor = float(c_entry.get("cursor", 15.0))
                 if advance:
                     cursor = round(cursor + step_seconds, 3)
                     c_entry["cursor"] = cursor
@@ -240,12 +241,13 @@ class PlaybackStateStore:
 
         def _mutate(state: Dict[str, Any]) -> float:
             if normalized_mode == "sync":
-                state["sync_cursor"] = 0.0
+                state["sync_cursor"] = 15.0
                 state["sync_last_wall_ts"] = now
+                state["sync_reset_ts"] = now
             else:
                 client_cursors = state.setdefault("client_cursors", {})
-                client_cursors[client_id] = {"cursor": 0.0, "last_ts": now}
-            return 0.0
+                client_cursors[client_id] = {"cursor": 15.0, "last_ts": now}
+            return 15.0
 
         return self._update_shared_state(_mutate)
 

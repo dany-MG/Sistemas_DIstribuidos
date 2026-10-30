@@ -3,6 +3,7 @@ import {
     getApiNodes,
     DATA_NODES,
     getClientId,
+    generateNewClientId,
     fetchClusterStatus,
     resetPlayback,
     switchSession,
@@ -328,7 +329,7 @@ const ClusterModal = ({ clusterInfo, currentClientId, onRefresh, onClose }) => {
 
 export default function Dashboard() {
     const [apiNodes] = useState(() => getApiNodes());
-    const [clientId] = useState(() => getClientId());
+    const [clientId, setClientId] = useState(() => getClientId());
     const [playbackMode, setPlaybackMode] = useState('sync'); // 'sync' | 'independent'
     const [selectedApiNodeUrl, setSelectedApiNodeUrl] = useState(() => getApiNodes()[0].baseUrl);
     const [selectedDataNode, setSelectedDataNode] = useState('auto');
@@ -339,32 +340,108 @@ export default function Dashboard() {
     const [loading, setLoading] = useState(true);
     const [connectionError, setConnectionError] = useState(false);
     const [backendOnline, setBackendOnline] = useState(false);
+    const [activeClientsCount, setActiveClientsCount] = useState(1);
+    const [roomSyncTimeDisplay, setRoomSyncTimeDisplay] = useState(15.0);
     const [telemetryHistory, setTelemetryHistory] = useState([]);
     const [isPaused, setIsPaused] = useState(false);
     const [showSetupModal, setShowSetupModal] = useState(false);
     const [showClusterModal, setShowClusterModal] = useState(false);
 
-    // Referencias para el Motor de Telemetría del Cliente (5 Hz local sin carga al servidor)
+    // Referencias separadas: Reloj Maestro Sincronizado de la Sala (sync) vs Reloj Independiente del Cliente (independent)
     const engineRef = useRef(null);
-    const cursorRef = useRef(15.0);
+    const syncCursorRef = useRef(15.0);
+    const indCursorRef = useRef(15.0);
+    const lastServerResetTsRef = useRef(0.0);
+    const broadcastChannelRef = useRef(null);
+    const localPeersRef = useRef({});
+    const serverClientsRef = useRef([]);
+
     const syncMetaRef = useRef({
-        api_node_id: 'client-sw-engine',
-        data_node_id: 'edge-pack',
+        api_node_id: 'api-node-1',
+        data_node_id: 'data-node-1',
         active_clients_count: 1,
         playback_mode: 'sync',
     });
 
-    const applyPackPayload = (packPayload, mode) => {
-        if (!packPayload || !packPayload.telemetry_pack) return false;
+    const getActiveCursor = (mode = playbackMode) => {
+        return mode === 'sync' ? syncCursorRef.current : indCursorRef.current;
+    };
 
-        const engine = new TelemetryClientEngine(packPayload.telemetry_pack);
+    const recomputeConnectedClients = () => {
+        const now = Date.now();
+        const peers = localPeersRef.current;
+        for (const pid of Object.keys(peers)) {
+            if (now - peers[pid].lastSeen > 3500) {
+                delete peers[pid];
+            }
+        }
+
+        const currentNodeObj = apiNodes.find(n => n.baseUrl === selectedApiNodeUrl);
+        const selfEntry = {
+            client_id: clientId,
+            mode: playbackMode,
+            cursor_s: Number(getActiveCursor().toFixed(1)),
+            api_node: syncMetaRef.current.api_node_id || currentNodeObj?.id || 'api-node-1',
+            data_node: syncMetaRef.current.data_node_id || (selectedDataNode === 'auto' ? 'data-node-1' : selectedDataNode),
+        };
+
+        const mergedMap = new Map();
+        for (const sc of serverClientsRef.current) {
+            if (sc && sc.client_id) {
+                mergedMap.set(sc.client_id, sc);
+            }
+        }
+        for (const [pid, pinfo] of Object.entries(peers)) {
+            mergedMap.set(pid, {
+                client_id: pid,
+                mode: pinfo.mode || 'sync',
+                cursor_s: Number((pinfo.cursor_s ?? 15.0).toFixed(1)),
+                api_node: pinfo.api_node || 'api-node-1',
+                data_node: pinfo.data_node || 'data-node-1',
+            });
+        }
+        mergedMap.set(clientId, selfEntry);
+
+        const mergedList = Array.from(mergedMap.values());
+        const totalCount = Math.max(1, mergedList.length);
+
+        syncMetaRef.current.active_clients_count = totalCount;
+        setActiveClientsCount(totalCount);
+
+        setClusterStatus(prev => ({
+            ...(prev || {
+                current_api_node: selfEntry.api_node,
+                state_backend: backendOnline ? 'ipc_shared_store' : 'browser_broadcast_mesh',
+                api_nodes: [
+                    { node_id: 'api-node-1', role: 'api', url: apiNodes[0]?.baseUrl || '', status: 'online' },
+                    { node_id: 'api-node-2', role: 'api', url: apiNodes[1]?.baseUrl || '', status: 'online' },
+                ],
+                data_nodes: [
+                    { node_id: 'data-node-1', role: 'data', url: 'internal://data-node-1', status: 'online' },
+                    { node_id: 'data-node-2', role: 'data', url: 'internal://data-node-2', status: 'online' },
+                ],
+            }),
+            sync_cursor_s: Number(syncCursorRef.current.toFixed(1)),
+            connected_clients: mergedList,
+        }));
+    };
+
+    const applyPackPayload = (packPayload, mode) => {
+        const actualPayload = packPayload?.packData ? packPayload.packData : packPayload;
+        if (!actualPayload || !actualPayload.telemetry_pack) return false;
+
+        const engine = new TelemetryClientEngine(actualPayload.telemetry_pack);
         engineRef.current = engine;
 
-        const initialCursor = engine.clampCursor(cursorRef.current);
-        cursorRef.current = initialCursor;
+        syncCursorRef.current = engine.clampCursor(syncCursorRef.current);
+        indCursorRef.current = engine.clampCursor(indCursorRef.current);
 
-        const resolvedApiNode = packPayload.api_node_id || packPayload.cluster?.current_api_node || syncMetaRef.current.api_node_id;
-        const resolvedDataNode = packPayload.data_node_id || syncMetaRef.current.data_node_id;
+        const resolvedApiNode =
+            actualPayload.api_node_id ||
+            actualPayload.cluster?.current_api_node ||
+            syncMetaRef.current.api_node_id;
+        const resolvedDataNode =
+            actualPayload.data_node_id || syncMetaRef.current.data_node_id;
 
         syncMetaRef.current = {
             ...syncMetaRef.current,
@@ -373,26 +450,27 @@ export default function Dashboard() {
             playback_mode: mode,
         };
 
-        const initialSnapshot = engine.computeSnapshotAt(initialCursor, syncMetaRef.current);
+        const activeCur = mode === 'sync' ? syncCursorRef.current : indCursorRef.current;
+        const initialSnapshot = engine.computeSnapshotAt(activeCur, syncMetaRef.current);
 
-        setTrackCoords(packPayload.track_map || []);
-        if (packPayload.cluster) {
-            setClusterStatus(packPayload.cluster);
+        setTrackCoords(actualPayload.track_map || []);
+        if (actualPayload.cluster) {
+            setClusterStatus(actualPayload.cluster);
         }
 
         setData({
-            status: 'Session Pack Loaded (Client Engine)',
-            session: packPayload.session || {},
-            setup: packPayload.setup || {},
-            available_sessions: packPayload.available_sessions || ['sebring_session.duckdb'],
-            active_session_file: packPayload.active_session_file || 'sebring_session.duckdb',
+            status: 'Session Pack Loaded (20 Hz Client Engine)',
+            session: actualPayload.session || {},
+            setup: actualPayload.setup || {},
+            available_sessions: actualPayload.available_sessions || ['sebring_session.duckdb'],
+            active_session_file: actualPayload.active_session_file || 'sebring_session.duckdb',
             current_telemetry: initialSnapshot,
         });
-        setTelemetryHistory(initialSnapshot ? [initialSnapshot] : []);
+        setTelemetryHistory(preset => (preset && preset.length > 0 ? preset : initialSnapshot ? [initialSnapshot] : []));
         return true;
     };
 
-    // 1. Registro del Service Worker y carga instantánea del Session Pack (Caché / Edge / Render)
+    // 1. Registro del Service Worker y carga instantánea del Session Pack a 20 Hz
     useEffect(() => {
         let isMounted = true;
         registerTelemetryServiceWorker();
@@ -425,16 +503,116 @@ export default function Dashboard() {
         };
     }, []);
 
-    // 2. Motor de Telemetría en el Cliente a 5 Hz (200 ms) — 0% consultas por tick a DuckDB en el servidor
+    // 2. Malla Local Multi-Pestaña (BroadcastChannel) para detección instantánea de clientes y reloj compartido (<10 ms)
     useEffect(() => {
-        if (loading || isPaused) return;
+        if (typeof window === 'undefined' || typeof BroadcastChannel === 'undefined') return;
+
+        const instanceUuid = Math.random().toString(36).slice(2);
+        const bc = new BroadcastChannel('lmu_paddock_room_sync');
+        broadcastChannelRef.current = bc;
+
+        const sendLocalHeartbeat = () => {
+            const currentNodeObj = apiNodes.find(n => n.baseUrl === selectedApiNodeUrl);
+            bc.postMessage({
+                type: 'HEARTBEAT',
+                instanceUuid,
+                clientId,
+                mode: playbackMode,
+                cursor_s: getActiveCursor(),
+                syncCursor_s: syncCursorRef.current,
+                api_node: syncMetaRef.current.api_node_id || currentNodeObj?.id || 'api-node-1',
+                data_node: syncMetaRef.current.data_node_id || (selectedDataNode === 'auto' ? 'data-node-1' : selectedDataNode),
+                ts: Date.now(),
+            });
+        };
+
+        bc.onmessage = (ev) => {
+            const msg = ev.data;
+            if (!msg || msg.instanceUuid === instanceUuid) return;
+
+            // Si el usuario duplicó la pestaña y heredó el mismo clientId, generamos un ID nuevo automáticamente
+            if (msg.clientId === clientId) {
+                const newCid = generateNewClientId();
+                setClientId(newCid);
+                return;
+            }
+
+            if (msg.type === 'HEARTBEAT') {
+                localPeersRef.current[msg.clientId] = {
+                    client_id: msg.clientId,
+                    mode: msg.mode,
+                    cursor_s: msg.cursor_s,
+                    api_node: msg.api_node,
+                    data_node: msg.data_node,
+                    lastSeen: Date.now(),
+                };
+
+                // Si ambos clientes están en modo sincronizado y aún no hay servidor externo guiando, alineamos el reloj
+                if (!backendOnline && msg.mode === 'sync' && typeof msg.syncCursor_s === 'number') {
+                    if (msg.syncCursor_s > syncCursorRef.current + 0.3) {
+                        syncCursorRef.current = msg.syncCursor_s;
+                    }
+                }
+                recomputeConnectedClients();
+            } else if (msg.type === 'RESET_SYNC') {
+                syncCursorRef.current = typeof msg.cursor_s === 'number' ? msg.cursor_s : 15.0;
+                if (playbackMode === 'sync') {
+                    setTelemetryHistory([]);
+                }
+                recomputeConnectedClients();
+            } else if (msg.type === 'LEAVE') {
+                delete localPeersRef.current[msg.clientId];
+                recomputeConnectedClients();
+            }
+        };
+
+        sendLocalHeartbeat();
+        const hbInterval = setInterval(() => {
+            sendLocalHeartbeat();
+            recomputeConnectedClients();
+        }, 700);
+
+        const handleUnload = () => {
+            try {
+                bc.postMessage({ type: 'LEAVE', instanceUuid, clientId });
+            } catch {}
+        };
+        window.addEventListener('beforeunload', handleUnload);
+
+        return () => {
+            clearInterval(hbInterval);
+            window.removeEventListener('beforeunload', handleUnload);
+            handleUnload();
+            bc.close();
+        };
+    }, [clientId, playbackMode, selectedApiNodeUrl, selectedDataNode, backendOnline]);
+
+    // 3. Motor de Telemetría en el Cliente a 20 Hz (50 ms) con Delta-Time Real (1.0x exacto)
+    useEffect(() => {
+        if (loading) return;
+
+        let lastPerfNow = performance.now();
 
         const tickInterval = setInterval(() => {
+            const now = performance.now();
+            const dt = Math.min(0.25, Math.max(0.001, (now - lastPerfNow) / 1000.0));
+            lastPerfNow = now;
+
             const engine = engineRef.current;
             if (!engine) return;
 
-            cursorRef.current = engine.advanceCursor(cursorRef.current, 0.2);
-            const liveTelemetry = engine.computeSnapshotAt(cursorRef.current, {
+            // El reloj maestro de la sala (syncCursorRef) SIEMPRE avanza en tiempo real 1.0x
+            syncCursorRef.current = engine.advanceCursor(syncCursorRef.current, dt);
+            setRoomSyncTimeDisplay(syncCursorRef.current);
+
+            if (isPaused) return;
+
+            if (playbackMode === 'independent') {
+                indCursorRef.current = engine.advanceCursor(indCursorRef.current, dt);
+            }
+
+            const activeCursor = playbackMode === 'sync' ? syncCursorRef.current : indCursorRef.current;
+            const liveTelemetry = engine.computeSnapshotAt(activeCursor, {
                 ...syncMetaRef.current,
                 playback_mode: playbackMode,
             });
@@ -447,26 +625,31 @@ export default function Dashboard() {
 
                 setTelemetryHistory(prevHistory => {
                     const nextHistory = [...prevHistory, liveTelemetry];
-                    return nextHistory.slice(-100);
+                    return nextHistory.slice(-160); // 8 segundos de ventana a 20 Hz
                 });
             }
-        }, 200);
+        }, 50);
 
         return () => clearInterval(tickInterval);
     }, [loading, isPaused, playbackMode]);
 
-    // 3. Sincronización ultraligera de reloj y presencia con Render cada 2.5s (sin bloquear la UI)
+    // 4. Sincronización ultraligera de reloj y presencia con el Servidor cada 1.5s
     useEffect(() => {
         if (loading) return;
         let isMounted = true;
 
         const syncWithBackend = async () => {
+            const engine = engineRef.current;
+            const durationSec = engine ? engine.durationSec : 649.5;
+            const activeCursor = playbackMode === 'sync' ? syncCursorRef.current : indCursorRef.current;
+
             const syncResp = await syncClientStateWithServer(
                 selectedApiNodeUrl,
                 clientId,
                 playbackMode,
-                cursorRef.current,
-                selectedDataNode
+                activeCursor,
+                selectedDataNode,
+                durationSec
             );
 
             if (!isMounted) return;
@@ -475,30 +658,51 @@ export default function Dashboard() {
                 setBackendOnline(true);
                 setConnectionError(false);
 
-                // En modo sincronizado, alineamos suavemente el cursor local con el reloj maestro del servidor
-                if (playbackMode === 'sync' && typeof syncResp.cursor_s === 'number') {
-                    const drift = Math.abs(cursorRef.current - syncResp.cursor_s);
-                    if (drift > 0.8) {
-                        cursorRef.current = syncResp.cursor_s;
+                // Detectamos si alguien pulsó REINICIAR (SALA) en otro cliente conectado al servidor
+                if (
+                    typeof syncResp.sync_reset_ts === 'number' &&
+                    syncResp.sync_reset_ts > lastServerResetTsRef.current &&
+                    lastServerResetTsRef.current > 0
+                ) {
+                    syncCursorRef.current = 15.0;
+                    if (playbackMode === 'sync') {
+                        setTelemetryHistory([]);
+                    }
+                }
+                if (typeof syncResp.sync_reset_ts === 'number') {
+                    lastServerResetTsRef.current = syncResp.sync_reset_ts;
+                }
+
+                // Actualizamos siempre la referencia del reloj maestro de la sala desde el servidor
+                if (typeof syncResp.sync_cursor_s === 'number') {
+                    const drift = Math.abs(syncCursorRef.current - syncResp.sync_cursor_s);
+                    if (drift > 0.45) {
+                        syncCursorRef.current = syncResp.sync_cursor_s;
                     }
                 }
 
+                if (Array.isArray(syncResp.connected_clients)) {
+                    serverClientsRef.current = syncResp.connected_clients;
+                }
+
                 syncMetaRef.current = {
+                    ...syncMetaRef.current,
                     api_node_id: syncResp.api_node_id || 'api-node-1',
                     data_node_id: syncResp.data_node_id || (selectedDataNode === 'auto' ? 'data-node-1' : selectedDataNode),
-                    active_clients_count: syncResp.active_clients_count || 1,
                     playback_mode: playbackMode,
                 };
+                recomputeConnectedClients();
             } else {
-                // Si el nodo actual tarda o Render está despertando del Free Tier, conmutamos sin congelar la UI
                 setBackendOnline(false);
                 const currentNodeObj = apiNodes.find(n => n.baseUrl === selectedApiNodeUrl);
                 syncMetaRef.current = {
                     ...syncMetaRef.current,
-                    api_node_id: currentNodeObj?.id || 'client-sw-engine',
-                    data_node_id: selectedDataNode === 'auto' ? 'sw-cache-pack' : selectedDataNode,
+                    api_node_id: currentNodeObj?.id || 'api-node-1',
+                    data_node_id: selectedDataNode === 'auto' ? 'data-node-1' : selectedDataNode,
                     playback_mode: playbackMode,
                 };
+                recomputeConnectedClients();
+
                 const fallbackNode = apiNodes.find(n => n.baseUrl !== selectedApiNodeUrl);
                 if (fallbackNode) {
                     setSelectedApiNodeUrl(fallbackNode.baseUrl);
@@ -507,7 +711,7 @@ export default function Dashboard() {
         };
 
         syncWithBackend();
-        const syncTimer = setInterval(syncWithBackend, 2500);
+        const syncTimer = setInterval(syncWithBackend, 1500);
 
         return () => {
             isMounted = false;
@@ -518,26 +722,82 @@ export default function Dashboard() {
     const handleRefreshCluster = async () => {
         const status = await fetchClusterStatus(selectedApiNodeUrl);
         if (status) {
-            setClusterStatus(status);
+            if (Array.isArray(status.connected_clients)) {
+                serverClientsRef.current = status.connected_clients;
+            }
             setBackendOnline(true);
+            recomputeConnectedClients();
+        } else {
+            recomputeConnectedClients();
         }
     };
 
     const handleResetPlayback = async () => {
         const engine = engineRef.current;
-        cursorRef.current = engine ? engine.getStartTime() : 15.0;
+        const startSec = engine ? engine.getStartTime() : 15.0;
+
+        if (playbackMode === 'sync') {
+            syncCursorRef.current = startSec;
+            if (broadcastChannelRef.current) {
+                try {
+                    broadcastChannelRef.current.postMessage({
+                        type: 'RESET_SYNC',
+                        clientId,
+                        cursor_s: startSec,
+                    });
+                } catch {}
+            }
+        } else {
+            indCursorRef.current = startSec;
+        }
+
         setTelemetryHistory([]);
         await resetPlayback(selectedApiNodeUrl, clientId, playbackMode);
     };
 
     const handleToggleMode = (newMode) => {
         if (newMode === playbackMode) return;
+
+        // Si pasa de Sincronizado a Independiente, arranca su cursor independiente desde el segundo actual
+        // pero a partir de ese momento queda desacoplado de la sala (puede reiniciar, pausar o arrastrar la barra)
+        if (newMode === 'independent' && playbackMode === 'sync') {
+            indCursorRef.current = syncCursorRef.current;
+        }
+
         setPlaybackMode(newMode);
         syncMetaRef.current = {
             ...syncMetaRef.current,
             playback_mode: newMode,
         };
         setTelemetryHistory([]);
+
+        const engine = engineRef.current;
+        if (engine) {
+            const targetCursor = newMode === 'sync' ? syncCursorRef.current : indCursorRef.current;
+            const snap = engine.computeSnapshotAt(targetCursor, {
+                ...syncMetaRef.current,
+                playback_mode: newMode,
+            });
+            setData(prev => prev ? ({ ...prev, current_telemetry: snap }) : prev);
+        }
+    };
+
+    const handleScrubIndependentTime = (newTimeSec) => {
+        const numericSec = Number(newTimeSec);
+        if (!Number.isFinite(numericSec)) return;
+        if (playbackMode !== 'independent') {
+            setPlaybackMode('independent');
+            syncMetaRef.current.playback_mode = 'independent';
+        }
+        indCursorRef.current = numericSec;
+        const engine = engineRef.current;
+        if (engine) {
+            const snap = engine.computeSnapshotAt(numericSec, {
+                ...syncMetaRef.current,
+                playback_mode: 'independent',
+            });
+            setData(prev => prev ? ({ ...prev, current_telemetry: snap }) : prev);
+        }
     };
 
     const handleSessionChange = async (e) => {
@@ -646,7 +906,7 @@ export default function Dashboard() {
                             </span>
 
                             <span className="px-2 py-1 rounded bg-emerald-500/10 border border-emerald-500/30 text-emerald-300">
-                                CLIENTES EN SALA: <strong>{tel.active_clients_count || 1}</strong>
+                                CLIENTES EN SALA: <strong>{Math.max(activeClientsCount, tel.active_clients_count || 1)}</strong>
                             </span>
 
                             <span
@@ -655,9 +915,9 @@ export default function Dashboard() {
                                         ? 'bg-cyan-500/10 border-cyan-500/30 text-cyan-300'
                                         : 'bg-amber-500/10 border-amber-500/30 text-amber-300'
                                 }`}
-                                title="El procesamiento pesado de telemetría corre en el navegador (Client Engine + Service Worker)"
+                                title="El procesamiento pesado de telemetría corre a 20 Hz en el navegador (Client Engine + Service Worker)"
                             >
-                                {backendOnline ? 'SW + RENDER SYNC ONLINE' : 'SW EDGE CACHE (RENDER STANDBY)'}
+                                {backendOnline ? '20Hz SW + RENDER SYNC ONLINE' : '20Hz SW EDGE (LOCAL MESH)'}
                             </span>
 
                             {/* Switch Sincronizado vs Independiente */}
@@ -684,6 +944,31 @@ export default function Dashboard() {
                                 >
                                     MODO INDEPENDIENTE
                                 </button>
+                            </div>
+
+                            {/* Control de Línea de Tiempo y Comparador de Relojes (Sala vs Cliente) */}
+                            <div className="flex items-center gap-2 bg-neutral-950 border border-neutral-800 rounded px-2.5 py-1">
+                                <span className="text-[10px] text-neutral-400">
+                                    SALA: <strong className="text-emerald-400">T+{roomSyncTimeDisplay.toFixed(1)}s</strong>
+                                </span>
+                                {playbackMode === 'independent' && (
+                                    <>
+                                        <span className="text-neutral-600">|</span>
+                                        <span className="text-[10px] text-purple-300">
+                                            MÍO: <strong>T+{(tel.session_time_s ?? 15.0).toFixed(1)}s</strong>
+                                        </span>
+                                        <input
+                                            type="range"
+                                            min="15"
+                                            max={Math.floor(engineRef.current?.durationSec || 649)}
+                                            step="0.5"
+                                            value={tel.session_time_s ?? 15}
+                                            onChange={(e) => handleScrubIndependentTime(e.target.value)}
+                                            className="w-24 accent-purple-500 cursor-pointer"
+                                            title="Desplazar libremente mi línea de tiempo independiente sin afectar a la sala"
+                                        />
+                                    </>
+                                )}
                             </div>
                         </div>
 
@@ -1025,7 +1310,7 @@ export default function Dashboard() {
                                     Analysis Channels
                                 </h2>
                                 <span className="text-[10px] font-mono text-neutral-500">
-                                    Ventana: {telemetryHistory.length} muestras (5 Hz)
+                                    Ventana: {telemetryHistory.length} muestras (20 Hz • 50 ms)
                                 </span>
                             </div>
                             

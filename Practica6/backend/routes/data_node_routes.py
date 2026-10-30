@@ -86,7 +86,7 @@ def get_raw_track_map(
 
 @router.get("/session-pack")
 def get_raw_session_pack(
-    step_hz: int = Query(default=5, ge=1, le=20),
+    step_hz: int = Query(default=20, ge=1, le=50),
     repo: TelemetryRepository = Depends(get_duckdb_repository),
 ):
     """

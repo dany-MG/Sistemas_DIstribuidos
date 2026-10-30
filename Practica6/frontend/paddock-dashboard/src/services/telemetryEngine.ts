@@ -71,7 +71,7 @@ export class TelemetryClientEngine {
 
     constructor(telemetryPack: any) {
         this.pack = telemetryPack || {};
-        this.stepHz = Number(this.pack.step_hz || 5);
+        this.stepHz = Number(this.pack.step_hz || 20);
         this.totalTicks = Number(this.pack.total_ticks || 1);
         this.durationSec = Number(this.pack.duration_sec || 649.5);
     }
@@ -88,49 +88,81 @@ export class TelemetryClientEngine {
         return cursorSec;
     }
 
-    public advanceCursor(cursorSec: number, stepSec: number = 0.2): number {
+    public advanceCursor(cursorSec: number, stepSec: number = 0.05): number {
         const next = cursorSec + stepSec;
         if (this.durationSec > 0 && next >= this.durationSec) {
             return 15.0;
         }
-        return Number(next.toFixed(2));
+        return Number(next.toFixed(3));
     }
 
-    private readScalar(channelKey: string, tickIdx: number, defaultVal: number = 0.0): number {
+    private readScalar(channelKey: string, exactTick: number, defaultVal: number = 0.0, interpolate: boolean = true): number {
         const arr = this.pack?.continuous?.[channelKey];
         if (!arr || arr.length === 0) return defaultVal;
-        const scaledIdx =
+
+        const maxIdx = arr.length - 1;
+        const pos =
             arr.length === this.totalTicks
-                ? tickIdx
-                : Math.min(arr.length - 1, Math.floor((tickIdx / this.totalTicks) * arr.length));
-        const val = arr[Math.max(0, Math.min(arr.length - 1, scaledIdx))];
-        return val !== undefined && val !== null ? Number(val) : defaultVal;
+                ? Math.max(0, Math.min(maxIdx, exactTick))
+                : Math.max(0, Math.min(maxIdx, (exactTick / Math.max(1, this.totalTicks - 1)) * maxIdx));
+
+        const idx0 = Math.floor(pos);
+        const v0 = arr[idx0];
+        if (!interpolate || idx0 >= maxIdx) {
+            return v0 !== undefined && v0 !== null ? Number(v0) : defaultVal;
+        }
+
+        const idx1 = Math.min(maxIdx, idx0 + 1);
+        const alpha = pos - idx0;
+        const n0 = v0 !== undefined && v0 !== null ? Number(v0) : defaultVal;
+        const n1 = arr[idx1] !== undefined && arr[idx1] !== null ? Number(arr[idx1]) : n0;
+        return n0 + (n1 - n0) * alpha;
     }
 
-    private readWheel(channelKey: string, tickIdx: number): WheelValues {
+    private readWheel(channelKey: string, exactTick: number): WheelValues {
         const arr = this.pack?.wheels?.[channelKey];
         if (!arr || arr.length === 0) {
             return { fl: 0, fr: 0, rl: 0, rr: 0 };
         }
-        const scaledIdx =
+        const maxIdx = arr.length - 1;
+        const pos =
             arr.length === this.totalTicks
-                ? tickIdx
-                : Math.min(arr.length - 1, Math.floor((tickIdx / this.totalTicks) * arr.length));
-        const row = arr[Math.max(0, Math.min(arr.length - 1, scaledIdx))];
-        if (!row || row.length < 4) {
+                ? Math.max(0, Math.min(maxIdx, exactTick))
+                : Math.max(0, Math.min(maxIdx, (exactTick / Math.max(1, this.totalTicks - 1)) * maxIdx));
+
+        const idx0 = Math.floor(pos);
+        const row0 = arr[idx0];
+        if (!row0 || row0.length < 4) {
             return { fl: 0, fr: 0, rl: 0, rr: 0 };
         }
+        if (idx0 >= maxIdx) {
+            return {
+                fl: Number(row0[0] ?? 0),
+                fr: Number(row0[1] ?? 0),
+                rl: Number(row0[2] ?? 0),
+                rr: Number(row0[3] ?? 0),
+            };
+        }
+
+        const row1 = arr[Math.min(maxIdx, idx0 + 1)] || row0;
+        const alpha = pos - idx0;
+        const lerp = (a: any, b: any) => {
+            const na = Number(a ?? 0);
+            const nb = Number(b ?? na);
+            return na + (nb - na) * alpha;
+        };
+
         return {
-            fl: Number(row[0] ?? 0),
-            fr: Number(row[1] ?? 0),
-            rl: Number(row[2] ?? 0),
-            rr: Number(row[3] ?? 0),
+            fl: lerp(row0[0], row1[0]),
+            fr: lerp(row0[1], row1[1]),
+            rl: lerp(row0[2], row1[2]),
+            rr: lerp(row0[3], row1[3]),
         };
     }
 
     /**
      * Calcula en el navegador del cliente el TelemetrySnapshot completo para cualquier
-     * instante cursorSec de la sesión en < 0.1 ms, liberando por completo al servidor.
+     * instante cursorSec de la sesión en < 0.1 ms, con interpolación a 20 Hz.
      */
     public computeSnapshotAt(
         cursorSec: number,
@@ -147,12 +179,12 @@ export class TelemetryClientEngine {
     ) {
         const normalizedSec =
             this.durationSec > 0 ? ((cursorSec % this.durationSec) + this.durationSec) % this.durationSec : 0;
-        const tickIdx = Math.min(
+        const exactTick = Math.min(
             this.totalTicks - 1,
-            Math.max(0, Math.floor(normalizedSec * this.stepHz))
+            Math.max(0, normalizedSec * this.stepHz)
         );
 
-        const sessionGpsTime = this.readScalar('gps_time', tickIdx, normalizedSec);
+        const sessionGpsTime = this.readScalar('gps_time', exactTick, normalizedSec, true);
         const ev = this.pack?.events || {};
 
         const [lapStartTs, currentLap] = findLatestEventPair(ev.lap, sessionGpsTime);
@@ -180,38 +212,38 @@ export class TelemetryClientEngine {
             active_clients_count: metaOverrides?.active_clients_count || metaOverrides?.activeClientsCount || 1,
             session_time_s: Number(normalizedSec.toFixed(2)),
 
-            rpm: this.readScalar('rpm', tickIdx, 0),
+            rpm: this.readScalar('rpm', exactTick, 0),
             max_rpm: Number(findLatestEventValue(ev.max_rpm, sessionGpsTime, 9500.0)),
             gear: Number(findLatestEventValue(ev.gear, sessionGpsTime, 0)),
-            speed_kmh: this.readScalar('speed_kmh', tickIdx, 0),
-            fuel_level_liters: this.readScalar('fuel_level_liters', tickIdx, 0),
-            virtual_energy_pct: this.readScalar('virtual_energy_pct', tickIdx, 0),
-            water_temp_c: this.readScalar('water_temp_c', tickIdx, 0),
-            oil_temp_c: this.readScalar('oil_temp_c', tickIdx, 0),
+            speed_kmh: this.readScalar('speed_kmh', exactTick, 0),
+            fuel_level_liters: this.readScalar('fuel_level_liters', exactTick, 0),
+            virtual_energy_pct: this.readScalar('virtual_energy_pct', exactTick, 0),
+            water_temp_c: this.readScalar('water_temp_c', exactTick, 0),
+            oil_temp_c: this.readScalar('oil_temp_c', exactTick, 0),
 
-            throttle_pos: this.readScalar('throttle_pos', tickIdx, 0),
-            brake_pos: this.readScalar('brake_pos', tickIdx, 0),
-            steering_pos: this.readScalar('steering_pos', tickIdx, 0),
-            g_force_lat: this.readScalar('g_force_lat', tickIdx, 0),
-            g_force_long: this.readScalar('g_force_long', tickIdx, 0),
+            throttle_pos: this.readScalar('throttle_pos', exactTick, 0),
+            brake_pos: this.readScalar('brake_pos', exactTick, 0),
+            steering_pos: this.readScalar('steering_pos', exactTick, 0),
+            g_force_lat: this.readScalar('g_force_lat', exactTick, 0),
+            g_force_long: this.readScalar('g_force_long', exactTick, 0),
 
-            tc_active: Boolean(this.readScalar('tc_active', tickIdx, 0)),
+            tc_active: Boolean(Math.round(this.readScalar('tc_active', exactTick, 0, false))),
             tc_level: Number(findLatestEventValue(ev.tc_level, sessionGpsTime, 0)),
             abs_active: Boolean(findLatestEventValue(ev.abs_active, sessionGpsTime, false)),
             abs_level: Number(findLatestEventValue(ev.abs_level, sessionGpsTime, 0)),
             brake_bias_rear: Number(brakeBiasRear.toFixed(1)),
 
-            gps_lat: this.readScalar('gps_lat', tickIdx, 0),
-            gps_lon: this.readScalar('gps_lon', tickIdx, 0),
+            gps_lat: this.readScalar('gps_lat', exactTick, 0),
+            gps_lon: this.readScalar('gps_lon', exactTick, 0),
             in_pits: Boolean(findLatestEventValue(ev.in_pits, sessionGpsTime, false)),
             yellow_flag: Number(findLatestEventValue(ev.yellow_flag, sessionGpsTime, 0)),
-            track_temp_c: this.readScalar('track_temp_c', tickIdx, 0),
-            ambient_temp_c: this.readScalar('ambient_temp_c', tickIdx, 0),
+            track_temp_c: this.readScalar('track_temp_c', exactTick, 0),
+            ambient_temp_c: this.readScalar('ambient_temp_c', exactTick, 0),
 
-            tyre_temps_c: this.readWheel('tyre_temps_c', tickIdx),
-            brake_temps_c: this.readWheel('brake_temps_c', tickIdx),
-            tyre_wear_percent: this.readWheel('tyre_wear_percent', tickIdx),
-            tyre_pressures_kpa: this.readWheel('tyre_pressures_kpa', tickIdx),
+            tyre_temps_c: this.readWheel('tyre_temps_c', exactTick),
+            brake_temps_c: this.readWheel('brake_temps_c', exactTick),
+            tyre_wear_percent: this.readWheel('tyre_wear_percent', exactTick),
+            tyre_pressures_kpa: this.readWheel('tyre_pressures_kpa', exactTick),
             tyre_compound: tyreCompound,
 
             current_lap: currentLap,

@@ -51,7 +51,7 @@ def api_health_check():
 
 @router.get("/session-pack")
 def get_session_pack(
-    step_hz: int = Query(default=5, ge=1, le=20),
+    step_hz: int = Query(default=20, ge=1, le=50),
     data_node: Optional[str] = Query(default=None),
     service: TelemetryService = Depends(get_telemetry_service),
 ):

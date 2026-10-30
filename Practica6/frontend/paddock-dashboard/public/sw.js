@@ -1,4 +1,4 @@
-const CACHE_NAME = 'lmu-paddock-telemetry-v1';
+const CACHE_NAME = 'lmu-paddock-telemetry-v2-20hz';
 const STATIC_FALLBACK_PACK = '/data/sebring_session_pack.json';
 
 const PRECACHE_URLS = [

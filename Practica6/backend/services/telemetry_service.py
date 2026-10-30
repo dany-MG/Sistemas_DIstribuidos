@@ -149,7 +149,7 @@ class TelemetryService:
 
     def get_full_session_pack(
         self,
-        step_hz: int = 5,
+        step_hz: int = 20,
         preferred_data_node: Optional[str] = None,
     ) -> dict:
         """
@@ -200,7 +200,7 @@ class TelemetryService:
         self,
         client_id: str = "default-client",
         mode: str = "sync",
-        client_cursor_s: float = 0.0,
+        client_cursor_s: float = 15.0,
         duration_sec: float = 649.5,
         preferred_data_node: Optional[str] = None,
     ) -> dict:
@@ -209,38 +209,57 @@ class TelemetryService:
         Actualiza y devuelve el reloj sincronizado de la sala y el listado de clientes conectados.
         """
         normalized_mode = "independent" if mode == "independent" else "sync"
+
+        # Siempre mantenemos vivo el reloj maestro compartido de la sala usando wall-clock delta real (1.0x)
+        room_sync_cursor = self.state.resolve_cursor(
+            client_id=client_id,
+            mode="sync",
+            advance=True,
+            step_seconds=0.05,
+        )
+        if duration_sec > 0 and room_sync_cursor >= duration_sec:
+            self.state.reset_cursor(client_id=client_id, mode="sync")
+            room_sync_cursor = 15.0
+
         if normalized_mode == "sync":
-            cursor_s = self.state.resolve_cursor(
-                client_id=client_id,
-                mode="sync",
-                advance=True,
-                step_seconds=2.5,
-            )
-            if duration_sec > 0 and cursor_s >= duration_sec:
-                self.state.reset_cursor(client_id=client_id, mode="sync")
-                cursor_s = 15.0
+            active_cursor_s = room_sync_cursor
         else:
-            cursor_s = max(0.0, float(client_cursor_s))
-            if duration_sec > 0 and cursor_s >= duration_sec:
-                cursor_s = 15.0
+            active_cursor_s = max(0.0, float(client_cursor_s))
+            if duration_sec > 0 and active_cursor_s >= duration_sec:
+                active_cursor_s = 15.0
 
         data_node_label = preferred_data_node if (preferred_data_node and preferred_data_node != "auto") else "data-node-1"
         active_clients_count = self.state.register_client_activity(
             client_id=client_id,
             mode=normalized_mode,
-            cursor_s=cursor_s,
+            cursor_s=active_cursor_s,
             api_node=get_node_id(),
             data_node=data_node_label,
         )
+
+        snapshot = self.state.get_cluster_snapshot()
+        clients_map = snapshot.get("clients", {})
+        connected_clients = [
+            {
+                "client_id": cid,
+                "mode": str(info.get("mode", "sync")),
+                "cursor_s": float(info.get("cursor_s", 15.0)),
+                "api_node": str(info.get("api_node", get_node_id())),
+                "data_node": str(info.get("data_node", data_node_label)),
+            }
+            for cid, info in sorted(clients_map.items())
+        ]
 
         return {
             "status": "ok",
             "api_node_id": get_node_id(),
             "data_node_id": data_node_label,
             "mode": normalized_mode,
-            "cursor_s": round(cursor_s, 2),
-            "sync_cursor_s": round(cursor_s, 2),
+            "cursor_s": round(active_cursor_s, 3),
+            "sync_cursor_s": round(room_sync_cursor, 3),
+            "sync_reset_ts": float(snapshot.get("sync_reset_ts", 0.0)),
             "active_clients_count": active_clients_count,
+            "connected_clients": connected_clients,
         }
 
     def reset_playback(self, client_id: str = "default-client", mode: str = "sync") -> float:

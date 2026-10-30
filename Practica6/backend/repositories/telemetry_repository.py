@@ -249,13 +249,14 @@ class TelemetryRepository:
             },
         }
 
-    def get_vectorized_session_pack(self, step_hz: int = 5) -> Dict[str, Any]:
+    def get_vectorized_session_pack(self, step_hz: int = 20) -> Dict[str, Any]:
         """
         Extrae en una sola operación vectorizada todas las series de tiempo (muestreadas a step_hz,
-        por defecto 5 Hz = cada 0.2s) y todas las tablas de eventos de la sesión en DuckDB.
+        por defecto 20 Hz = cada 0.05s / 50ms) y todas las tablas de eventos de la sesión en DuckDB.
         Permite que el cliente y su Service Worker procesen toda la telemetría localmente
         dejando el mínimo trabajo de CPU y memoria al servidor.
         """
+        step_hz = max(1, int(step_hz))
         frequencies = self.get_channel_frequencies()
 
         continuous_channels = {
