@@ -260,10 +260,43 @@ export const loadInitialSessionPackFast = async (
 
 export const fetchRemoteSessionPack = async (
     preferredBaseUrl: string = API_NODES[0].baseUrl,
-    dataNode: string = 'auto'
+    dataNode: string = 'auto',
+    sessionName: string = ''
 ) => {
     const params = new URLSearchParams({ step_hz: '20', data_node: dataNode });
+    if (sessionName) {
+        params.set('session', sessionName);
+    }
     const res = await fetchWithFailover(`/session-pack?${params.toString()}`, preferredBaseUrl, 10000);
+    return res ? res.data : null;
+};
+
+export const registerSessionPackOnServer = async (
+    filename: string,
+    packPayload: any,
+    apiBaseUrl: string = API_NODES[0].baseUrl
+) => {
+    const res = await fetchWithFailover(`/sessions/register-pack`, apiBaseUrl, 8000, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            filename,
+            pack_payload: packPayload,
+        }),
+    });
+    return res ? res.data : null;
+};
+
+export const uploadRawDuckdbFileToServer = async (
+    file: File,
+    apiBaseUrl: string = API_NODES[0].baseUrl
+) => {
+    const params = new URLSearchParams({ filename: file.name });
+    const res = await fetchWithFailover(`/sessions/upload?${params.toString()}`, apiBaseUrl, 25000, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/octet-stream' },
+        body: file,
+    });
     return res ? res.data : null;
 };
 

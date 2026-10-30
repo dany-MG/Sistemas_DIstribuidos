@@ -13,26 +13,32 @@ class TelemetryRepository:
         # y permitiendo que Múltiples Servidores de Datos lean el archivo .duckdb concurrentemente
         self._conn = duckdb.connect(database=self.db_path, read_only=True)
         
-        # Descubrimos dinámicamente los prefijos de las tablas generadas por LMU
+        # Descubrimos dinámicamente las tablas y el prefijo que LMU le asignó a esta sesión
+        self._available_tables = self._discover_available_tables()
         self.table_prefix = self._discover_table_prefix()
+
+    def _discover_available_tables(self) -> set:
+        try:
+            rows = self._conn.execute("SELECT table_name FROM information_schema.tables").fetchall()
+            return {r[0] for r in rows}
+        except duckdb.Error:
+            return set()
 
     def _discover_table_prefix(self) -> str:
         """
         Busca en el esquema de la base de datos para encontrar el prefijo 
         dinámico que LMU le asignó a las tablas en esta sesión.
         """
-        query = """
-            SELECT table_name 
-            FROM information_schema.tables 
-            WHERE table_name LIKE '%metadata%'
-            LIMIT 1
-        """
-        result = self._conn.execute(query).fetchone()
-        if result:
-            # Extraemos la parte del nombre antes de 'metadata'
-            full_name = result[0]
-            return full_name.replace("metadata", "")
+        for tname in self._available_tables:
+            if tname.lower().endswith("metadata"):
+                return tname[:-len("metadata")]
         return ""
+
+    def _resolve_channel_name(self, candidates: List[str]) -> str:
+        for cand in candidates:
+            if f"{self.table_prefix}{cand}" in self._available_tables:
+                return cand
+        return candidates[0]
 
     def get_session_metadata(self) -> Dict[str, Any]:
         """
@@ -260,30 +266,30 @@ class TelemetryRepository:
         frequencies = self.get_channel_frequencies()
 
         continuous_channels = {
-            "gps_time": ("GPS Time", 100),
-            "rpm": ("Engine RPM", 100),
-            "speed_kmh": ("Ground Speed", 100),
-            "fuel_level_liters": ("Fuel Level", 20),
-            "virtual_energy_pct": ("Virtual Energy", 20),
-            "water_temp_c": ("Engine Water Temp", 7),
-            "oil_temp_c": ("Engine Oil Temp", 7),
-            "throttle_pos": ("Throttle Pos Unfiltered", 50),
-            "brake_pos": ("Brake Pos Unfiltered", 50),
-            "steering_pos": ("Steering Pos", 100),
-            "g_force_lat": ("G Force Lat", 10),
-            "g_force_long": ("G Force Long", 10),
-            "tc_active": ("TC", 100),
-            "gps_lat": ("GPS Latitude", 10),
-            "gps_lon": ("GPS Longitude", 10),
-            "track_temp_c": ("Track Temperature", 1),
-            "ambient_temp_c": ("Ambient Temperature", 1),
+            "gps_time": (["GPS Time"], 100),
+            "rpm": (["Engine RPM"], 100),
+            "speed_kmh": (["Ground Speed"], 100),
+            "fuel_level_liters": (["Fuel Level"], 20),
+            "virtual_energy_pct": (["Virtual Energy"], 20),
+            "water_temp_c": (["Engine Water Temp"], 7),
+            "oil_temp_c": (["Engine Oil Temp"], 7),
+            "throttle_pos": (["Throttle Pos Unfiltered", "Throttle Pos"], 50),
+            "brake_pos": (["Brake Pos Unfiltered", "Brake Pos"], 50),
+            "steering_pos": (["Steering Pos", "Steering Pos Unfiltered"], 100),
+            "g_force_lat": (["G Force Lat"], 10),
+            "g_force_long": (["G Force Long"], 10),
+            "tc_active": (["TC", "TC Active"], 100),
+            "gps_lat": (["GPS Latitude"], 10),
+            "gps_lon": (["GPS Longitude"], 10),
+            "track_temp_c": (["Track Temperature"], 1),
+            "ambient_temp_c": (["Ambient Temperature"], 1),
         }
 
         wheel_channels = {
-            "tyre_temps_c": ("TyresTempCentre", 100),
-            "brake_temps_c": ("Brakes Temp", 50),
-            "tyre_wear_percent": ("Tyres Wear", 10),
-            "tyre_pressures_kpa": ("TyresPressure", 10),
+            "tyre_temps_c": (["TyresTempCentre", "Tyres Temp Centre"], 100),
+            "brake_temps_c": (["Brakes Temp", "BrakesTemp"], 50),
+            "tyre_wear_percent": (["Tyres Wear", "TyresWear"], 10),
+            "tyre_pressures_kpa": (["TyresPressure", "Tyres Pressure"], 10),
         }
 
         event_channels = {
@@ -307,7 +313,8 @@ class TelemetryRepository:
         }
 
         continuous_data: Dict[str, List[Any]] = {}
-        for key, (ch_name, default_freq) in continuous_channels.items():
+        for key, (ch_candidates, default_freq) in continuous_channels.items():
+            ch_name = self._resolve_channel_name(ch_candidates)
             freq = frequencies.get(ch_name, default_freq)
             step = max(1, int(round(freq / step_hz)))
             table_name = f'"{self.table_prefix}{ch_name}"'
@@ -324,7 +331,8 @@ class TelemetryRepository:
                 continuous_data[key] = []
 
         wheels_data: Dict[str, List[List[float]]] = {}
-        for key, (ch_name, default_freq) in wheel_channels.items():
+        for key, (ch_candidates, default_freq) in wheel_channels.items():
+            ch_name = self._resolve_channel_name(ch_candidates)
             freq = frequencies.get(ch_name, default_freq)
             step = max(1, int(round(freq / step_hz)))
             table_name = f'"{self.table_prefix}{ch_name}"'
@@ -366,7 +374,10 @@ class TelemetryRepository:
         except duckdb.Error:
             compound_idx = 0
 
-        total_ticks = len(continuous_data.get("rpm", []))
+        total_ticks = max(
+            (len(v) for k, v in continuous_data.items() if k in ("rpm", "speed_kmh", "gps_time")),
+            default=1,
+        )
         duration_sec = round(total_ticks / float(step_hz), 2)
 
         return {

@@ -4,12 +4,14 @@ import time
 from typing import Dict, List, Optional
 from database.connection import (
     get_node_id,
+    DATA_DIR,
     DEFAULT_API_NODES,
     DEFAULT_DATA_NODES,
     state_store,
     fetch_from_data_nodes,
     check_node_health,
     get_active_db_path,
+    list_available_sessions,
 )
 from repositories.telemetry_repository import TelemetryRepository
 from models.schemas import (
@@ -190,10 +192,65 @@ class TelemetryService:
             "api_node_id": get_node_id(),
             "data_node_id": resolved_data_node,
             "active_session_file": get_active_db_path().name,
+            "available_sessions": list_available_sessions(),
             "session": _LOCAL_META_CACHE[active_db_path].model_dump(),
             "setup": {k: v.model_dump() for k, v in _LOCAL_SETUP_CACHE[active_db_path].items()},
             "track_map": [p.model_dump() for p in _LOCAL_MAP_CACHE[active_db_path]],
             "telemetry_pack": pack,
+        }
+
+    def register_uploaded_session_pack(self, filename: str, pack_payload: dict) -> dict:
+        """
+        Registra en la memoria del servidor un paquete de sesión extraído en el cliente
+        por DuckDB-Wasm (o subido directamente) y lo activa para toda la sala.
+        """
+        clean_name = os.path.basename(filename.strip()) or "custom_session.duckdb"
+        if not clean_name.endswith(".duckdb"):
+            clean_name = f"{clean_name}.duckdb"
+
+        target_path_str = str(DATA_DIR / clean_name)
+
+        session_dict = pack_payload.get("session") or {}
+        if not session_dict.get("car_brand"):
+            session_dict["car_brand"] = self._infer_car_brand(session_dict.get("car_name", "Unknown"))
+        _LOCAL_META_CACHE[target_path_str] = SessionMetadata(**session_dict)
+
+        raw_setup = pack_payload.get("setup") or {}
+        parsed_setup: Dict[str, SetupEntry] = {}
+        for k, v in raw_setup.items():
+            if isinstance(v, dict):
+                parsed_setup[k] = SetupEntry(
+                    key=v.get("key", k),
+                    caption=v.get("caption"),
+                    value=v.get("value"),
+                    string_value=v.get("string_value"),
+                    last_saved=v.get("last_saved"),
+                    min_value=v.get("min_value"),
+                    max_value=v.get("max_value"),
+                    available=bool(v.get("available", True)),
+                    is_free_setting=bool(v.get("is_free_setting", True)),
+                )
+        _LOCAL_SETUP_CACHE[target_path_str] = parsed_setup
+
+        raw_map = pack_payload.get("track_map") or []
+        _LOCAL_MAP_CACHE[target_path_str] = [
+            GPSPoint(lat=float(p["lat"]), lon=float(p["lon"]))
+            for p in raw_map
+            if isinstance(p, dict) and "lat" in p and "lon" in p
+        ]
+
+        telemetry_pack = pack_payload.get("telemetry_pack") or {}
+        pack_hz = int(telemetry_pack.get("step_hz", 20))
+        _LOCAL_PACK_CACHE[f"{target_path_str}:{pack_hz}"] = telemetry_pack
+        _LOCAL_PACK_CACHE[f"{target_path_str}:20"] = telemetry_pack
+        _LOCAL_PACK_CACHE[f"{target_path_str}:5"] = telemetry_pack
+
+        self.state.register_custom_session_name(clean_name, activate=True)
+
+        return {
+            "status": "ok",
+            "active_session_file": clean_name,
+            "available_sessions": list_available_sessions(),
         }
 
     def sync_lightweight_state(
@@ -254,6 +311,8 @@ class TelemetryService:
             "status": "ok",
             "api_node_id": get_node_id(),
             "data_node_id": data_node_label,
+            "active_session_file": get_active_db_path().name,
+            "available_sessions": list_available_sessions(),
             "mode": normalized_mode,
             "cursor_s": round(active_cursor_s, 3),
             "sync_cursor_s": round(room_sync_cursor, 3),

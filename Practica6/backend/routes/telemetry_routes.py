@@ -1,16 +1,19 @@
+import os
 import asyncio
 import traceback
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from typing import List, Optional
 
 from database.connection import (
     get_node_id,
+    DATA_DIR,
     get_active_db_path,
     list_available_sessions,
     set_active_session,
     state_store,
 )
+from repositories.telemetry_repository import TelemetryRepository
 from services.telemetry_service import TelemetryService
 from models.schemas import (
     SessionMetadata,
@@ -96,7 +99,7 @@ def get_cluster_status(service: TelemetryService = Depends(get_telemetry_service
 
 @router.get("/sessions")
 def get_available_sessions():
-    """Devuelve la lista de archivos .duckdb disponibles en el directorio data/."""
+    """Devuelve la lista de archivos .duckdb disponibles en el directorio data/ y registrados en sala."""
     active_db = get_active_db_path()
     return {
         "active": active_db.name,
@@ -104,12 +107,81 @@ def get_available_sessions():
     }
 
 
+@router.post("/sessions/register-pack")
+async def register_client_session_pack(
+    request: Request,
+    service: TelemetryService = Depends(get_telemetry_service),
+):
+    """
+    Recibe el paquete vectorizado ya extraído en el navegador por DuckDB-Wasm (~350 KB)
+    y lo registra como sesión activa en el servidor para todos los clientes de la sala.
+    """
+    try:
+        body = await request.json()
+        filename = body.get("filename") or "custom_session.duckdb"
+        pack_payload = body.get("pack_payload") or body
+        return service.register_uploaded_session_pack(filename=filename, pack_payload=pack_payload)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Error registrando session-pack: {str(e)}")
+
+
+@router.post("/sessions/upload")
+async def upload_duckdb_session_file(
+    request: Request,
+    filename: str = Query(default="uploaded_session.duckdb"),
+    service: TelemetryService = Depends(get_telemetry_service),
+):
+    """
+    Recibe un archivo binario .duckdb de Le Mans Ultimate, valida su esquema,
+    lo guarda en backend/data/ y devuelve el session-pack a 20 Hz.
+    """
+    clean_name = os.path.basename(filename.strip()) or "uploaded_session.duckdb"
+    if not clean_name.endswith(".duckdb"):
+        clean_name = f"{clean_name}.duckdb"
+
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    target_path = DATA_DIR / clean_name
+
+    try:
+        raw_bytes = await request.body()
+        if not raw_bytes or len(raw_bytes) < 1024:
+            raise HTTPException(status_code=400, detail="El archivo .duckdb recibido está vacío o incompleto.")
+
+        target_path.write_bytes(raw_bytes)
+
+        # Validamos que DuckDB pueda abrirlo y que contenga metadatos de LMU
+        repo = TelemetryRepository(str(target_path))
+        try:
+            meta = repo.get_session_metadata()
+            if not meta:
+                raise ValueError("No se encontró tabla de metadata de Le Mans Ultimate en el archivo .duckdb.")
+        finally:
+            repo.close()
+
+        set_active_session(clean_name)
+        return service.get_full_session_pack(step_hz=20)
+    except HTTPException:
+        raise
+    except Exception as e:
+        if target_path.exists() and target_path.name != "Sebring International Raceway_P_2026-10-18T21_03_43Z.duckdb":
+            try:
+                target_path.unlink()
+            except Exception:
+                pass
+        raise HTTPException(status_code=400, detail=f"Archivo .duckdb inválido: {str(e)}")
+
+
 @router.post("/sessions/{filename}")
 def switch_active_session(filename: str):
     """Cambia la sesión activa de DuckDB y reinicia el cursor de reproducción."""
     try:
         new_path = set_active_session(filename)
-        return {"status": "ok", "active": new_path.name, "cursor": 0.0}
+        return {
+            "status": "ok",
+            "active": new_path.name,
+            "available_sessions": list_available_sessions(),
+            "cursor": 15.0,
+        }
     except FileNotFoundError as e:
         raise HTTPException(status_code=404, detail=str(e))
 

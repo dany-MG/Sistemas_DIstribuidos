@@ -11,9 +11,12 @@ import {
     registerTelemetryServiceWorker,
     loadInitialSessionPackFast,
     fetchRemoteSessionPack,
+    registerSessionPackOnServer,
+    uploadRawDuckdbFileToServer,
     syncClientStateWithServer,
 } from '../services/api';
 import { TelemetryClientEngine } from '../services/telemetryEngine';
+import { parseDuckdbFileInBrowser } from '../services/duckdbClientReader';
 import { LineChart, Line, YAxis, ResponsiveContainer } from 'recharts';
 
 const formatTime = (timeInSeconds) => {
@@ -346,6 +349,7 @@ export default function Dashboard() {
     const [isPaused, setIsPaused] = useState(false);
     const [showSetupModal, setShowSetupModal] = useState(false);
     const [showClusterModal, setShowClusterModal] = useState(false);
+    const [duckdbUploadStatus, setDuckdbUploadStatus] = useState('');
 
     // Referencias separadas: Reloj Maestro Sincronizado de la Sala (sync) vs Reloj Independiente del Cliente (independent)
     const engineRef = useRef(null);
@@ -355,6 +359,9 @@ export default function Dashboard() {
     const broadcastChannelRef = useRef(null);
     const localPeersRef = useRef({});
     const serverClientsRef = useRef([]);
+    const loadedPacksRef = useRef({});
+    const activeSessionNameRef = useRef('');
+    const fileInputRef = useRef(null);
 
     const syncMetaRef = useRef({
         api_node_id: 'api-node-1',
@@ -458,12 +465,26 @@ export default function Dashboard() {
             setClusterStatus(actualPayload.cluster);
         }
 
+        const sessionFilename =
+            actualPayload.active_session_file ||
+            'Sebring International Raceway_P_2026-10-18T21_03_43Z.duckdb';
+        activeSessionNameRef.current = sessionFilename;
+        loadedPacksRef.current[sessionFilename] = actualPayload;
+
+        const knownSessions = Array.from(
+            new Set([
+                ...(actualPayload.available_sessions || []),
+                ...Object.keys(loadedPacksRef.current),
+                sessionFilename,
+            ])
+        );
+
         setData({
             status: 'Session Pack Loaded (20 Hz Client Engine)',
             session: actualPayload.session || {},
             setup: actualPayload.setup || {},
-            available_sessions: actualPayload.available_sessions || ['sebring_session.duckdb'],
-            active_session_file: actualPayload.active_session_file || 'sebring_session.duckdb',
+            available_sessions: knownSessions,
+            active_session_file: sessionFilename,
             current_telemetry: initialSnapshot,
         });
         setTelemetryHistory(preset => (preset && preset.length > 0 ? preset : initialSnapshot ? [initialSnapshot] : []));
@@ -560,6 +581,11 @@ export default function Dashboard() {
                     setTelemetryHistory([]);
                 }
                 recomputeConnectedClients();
+            } else if (msg.type === 'SESSION_SWITCH' && msg.packPayload) {
+                syncCursorRef.current = 15.0;
+                indCursorRef.current = 15.0;
+                setTelemetryHistory([]);
+                applyPackPayload(msg.packPayload, playbackMode);
             } else if (msg.type === 'LEAVE') {
                 delete localPeersRef.current[msg.clientId];
                 recomputeConnectedClients();
@@ -685,6 +711,43 @@ export default function Dashboard() {
                     serverClientsRef.current = syncResp.connected_clients;
                 }
 
+                // Si otro cliente en la sala seleccionó o subió otro archivo .duckdb, sincronizamos la sesión
+                if (
+                    syncResp.active_session_file &&
+                    activeSessionNameRef.current &&
+                    syncResp.active_session_file !== activeSessionNameRef.current
+                ) {
+                    activeSessionNameRef.current = syncResp.active_session_file;
+                    if (loadedPacksRef.current[syncResp.active_session_file]) {
+                        applyPackPayload(loadedPacksRef.current[syncResp.active_session_file], playbackMode);
+                    } else {
+                        fetchRemoteSessionPack(
+                            selectedApiNodeUrl,
+                            selectedDataNode,
+                            syncResp.active_session_file
+                        ).then((newPack) => {
+                            if (isMounted && newPack && newPack.telemetry_pack) {
+                                syncCursorRef.current = 15.0;
+                                setTelemetryHistory([]);
+                                applyPackPayload(newPack, playbackMode);
+                            }
+                        });
+                    }
+                } else if (Array.isArray(syncResp.available_sessions) && syncResp.available_sessions.length > 0) {
+                    setData(prev => {
+                        if (!prev) return prev;
+                        const merged = Array.from(
+                            new Set([
+                                ...(prev.available_sessions || []),
+                                ...syncResp.available_sessions,
+                                ...Object.keys(loadedPacksRef.current),
+                            ])
+                        );
+                        if (merged.length === (prev.available_sessions || []).length) return prev;
+                        return { ...prev, available_sessions: merged };
+                    });
+                }
+
                 syncMetaRef.current = {
                     ...syncMetaRef.current,
                     api_node_id: syncResp.api_node_id || 'api-node-1',
@@ -802,14 +865,97 @@ export default function Dashboard() {
 
     const handleSessionChange = async (e) => {
         const newSession = e.target.value;
-        if (!newSession) return;
-        setLoading(true);
+        if (!newSession || newSession === activeSessionNameRef.current) return;
+
+        syncCursorRef.current = 15.0;
+        indCursorRef.current = 15.0;
+        setTelemetryHistory([]);
+
+        // Si ya tenemos el paquete de esa sesión en memoria del cliente, cambiamos en 0 ms
+        if (loadedPacksRef.current[newSession]) {
+            const cachedPack = loadedPacksRef.current[newSession];
+            applyPackPayload(cachedPack, playbackMode);
+            if (broadcastChannelRef.current) {
+                try {
+                    broadcastChannelRef.current.postMessage({
+                        type: 'SESSION_SWITCH',
+                        clientId,
+                        packPayload: cachedPack,
+                    });
+                } catch {}
+            }
+            switchSession(newSession, selectedApiNodeUrl).catch(() => {});
+            return;
+        }
+
+        setDuckdbUploadStatus(`Cambiando a sesión ${newSession}...`);
         await switchSession(newSession, selectedApiNodeUrl);
-        const remotePack = await fetchRemoteSessionPack(selectedApiNodeUrl, selectedDataNode);
+        const remotePack = await fetchRemoteSessionPack(selectedApiNodeUrl, selectedDataNode, newSession);
         if (remotePack) {
             applyPackPayload(remotePack, playbackMode);
+            if (broadcastChannelRef.current) {
+                try {
+                    broadcastChannelRef.current.postMessage({
+                        type: 'SESSION_SWITCH',
+                        clientId,
+                        packPayload: remotePack,
+                    });
+                } catch {}
+            }
         }
-        setLoading(false);
+        setDuckdbUploadStatus('');
+    };
+
+    const handleUploadDuckdbFile = async (e) => {
+        const file = e.target.files?.[0];
+        if (!file) return;
+        e.target.value = '';
+
+        try {
+            // 1. Procesamos el archivo .duckdb en el navegador con DuckDB-Wasm (0 carga pesada al servidor)
+            const localPackPayload = await parseDuckdbFileInBrowser(file, 20, (msg) => {
+                setDuckdbUploadStatus(msg);
+            });
+
+            syncCursorRef.current = 15.0;
+            indCursorRef.current = 15.0;
+            setTelemetryHistory([]);
+            applyPackPayload(localPackPayload, playbackMode);
+
+            if (broadcastChannelRef.current) {
+                try {
+                    broadcastChannelRef.current.postMessage({
+                        type: 'SESSION_SWITCH',
+                        clientId,
+                        packPayload: localPackPayload,
+                    });
+                } catch {}
+            }
+
+            setDuckdbUploadStatus('Sincronizando sesión con el servidor de la sala...');
+            await registerSessionPackOnServer(file.name, localPackPayload, selectedApiNodeUrl);
+            setDuckdbUploadStatus('');
+        } catch (wasmErr) {
+            console.warn('Fallback a subida directa al servidor tras error en DuckDB-Wasm:', wasmErr);
+            setDuckdbUploadStatus(`Subiendo ${file.name} al servidor DuckDB...`);
+            const uploadedPack = await uploadRawDuckdbFileToServer(file, selectedApiNodeUrl);
+            if (uploadedPack && uploadedPack.telemetry_pack) {
+                syncCursorRef.current = 15.0;
+                indCursorRef.current = 15.0;
+                setTelemetryHistory([]);
+                applyPackPayload(uploadedPack, playbackMode);
+                if (broadcastChannelRef.current) {
+                    try {
+                        broadcastChannelRef.current.postMessage({
+                            type: 'SESSION_SWITCH',
+                            clientId,
+                            packPayload: uploadedPack,
+                        });
+                    } catch {}
+                }
+            }
+            setDuckdbUploadStatus('');
+        }
     };
 
     // Matemáticas de Proyección Cartográfica (Se calcula solo cuando carga el mapa)
@@ -871,6 +1017,13 @@ export default function Dashboard() {
 
     return (
         <div className="min-h-screen bg-neutral-950 text-neutral-100 p-6 font-sans">
+            {duckdbUploadStatus && (
+                <div className="bg-cyan-500/20 border border-cyan-500 text-cyan-200 p-2.5 mb-4 rounded text-xs font-mono animate-pulse flex justify-between items-center">
+                    <span>DUCKDB-WASM CLIENT ENGINE: {duckdbUploadStatus}</span>
+                    <span>20 Hz TELEMETRY EXTRACTOR</span>
+                </div>
+            )}
+
             {connectionError && (
                 <div className="bg-amber-500/20 border border-amber-500 text-amber-300 p-2 mb-4 rounded text-xs font-mono animate-pulse flex justify-between items-center">
                     <span>CONMUTACIÓN DE NODO: Reconectando flujo de telemetría con otro servidor activo del clúster...</span>
@@ -1086,21 +1239,42 @@ export default function Dashboard() {
 
                         {/* Derecha: Controles, Clima, Temperaturas y Estado de Red */}
                         <div className="flex flex-wrap items-center gap-4 self-start xl:self-center bg-neutral-950 p-3 rounded-lg border border-neutral-800 w-full xl:w-auto justify-between">
-                            {/* Selector de sesión si hay archivos .duckdb */}
-                            {data.available_sessions?.length > 0 && (
+                            {/* Selector y Cargador de archivos .duckdb de Le Mans Ultimate */}
+                            <div className="flex items-end gap-2">
                                 <div className="flex flex-col">
-                                    <span className="text-[9px] text-neutral-500 font-mono uppercase">Recurso .duckdb</span>
+                                    <span className="text-[9px] text-neutral-500 font-mono uppercase">
+                                        Sesión Telemetría (.duckdb)
+                                    </span>
                                     <select
                                         value={data.active_session_file || ""}
                                         onChange={handleSessionChange}
-                                        className="bg-neutral-900 border border-neutral-800 rounded px-2 py-1 text-[11px] font-mono text-neutral-200 max-w-[180px] truncate"
+                                        className="bg-neutral-900 border border-neutral-800 rounded px-2 py-1.5 text-[11px] font-mono text-cyan-300 font-semibold max-w-[210px] truncate cursor-pointer"
+                                        title={data.active_session_file || "Seleccionar archivo .duckdb"}
                                     >
-                                        {data.available_sessions.map((file) => (
-                                            <option key={file} value={file}>{file.replace('.duckdb', '')}</option>
+                                        {(data.available_sessions || [data.active_session_file || "sebring_session.duckdb"]).map((file) => (
+                                            <option key={file} value={file}>
+                                                {file.replace(/\.duckdb$/i, '')}
+                                            </option>
                                         ))}
                                     </select>
                                 </div>
-                            )}
+
+                                <input
+                                    ref={fileInputRef}
+                                    type="file"
+                                    accept=".duckdb,.db"
+                                    onChange={handleUploadDuckdbFile}
+                                    className="hidden"
+                                />
+                                <button
+                                    onClick={() => fileInputRef.current?.click()}
+                                    disabled={Boolean(duckdbUploadStatus)}
+                                    className="px-2.5 py-1.5 rounded text-[10px] font-mono font-bold bg-cyan-500/15 hover:bg-cyan-500/25 text-cyan-300 border border-cyan-500/40 transition cursor-pointer disabled:opacity-50"
+                                    title="Seleccionar cualquier archivo .duckdb grabado por Le Mans Ultimate desde tu equipo (procesado con DuckDB-Wasm)"
+                                >
+                                    {duckdbUploadStatus ? "PROCESANDO..." : "+ CARGAR .DUCKDB"}
+                                </button>
+                            </div>
 
                             {/* Botones de Ingeniería (Setup + Controles de Playback) */}
                             <div className="flex items-center gap-2">
@@ -1428,7 +1602,7 @@ export default function Dashboard() {
                                             />
                                             {carPos && (
                                                 <g>
-                                                    <circle cx={carPos.x} cy={carPos.y} r="6" fill="#22c55e" fillOpacity="0.3" className="animate-ping" />
+                                                    <circle cx={carPos.x} cy={carPos.y} r="6" fill="#22c55e" fillOpacity="0.3"/>
                                                     <circle cx={carPos.x} cy={carPos.y} r="4" fill="#22c55e" stroke="#ffffff" strokeWidth="1.5" />
                                                 </g>
                                             )}

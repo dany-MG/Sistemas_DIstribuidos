@@ -116,6 +116,7 @@ class PlaybackStateStore:
     def _default_state(self) -> Dict[str, Any]:
         return {
             "active_session": DEFAULT_DB_NAME,
+            "custom_sessions": [],
             "sync_cursor": 15.0,
             "sync_last_wall_ts": 0.0,
             "sync_reset_ts": 0.0,
@@ -298,13 +299,35 @@ class PlaybackStateStore:
         state = self._read_shared_state()
         return str(state.get("active_session", DEFAULT_DB_NAME))
 
+    def get_custom_sessions(self) -> List[str]:
+        state = self._read_shared_state()
+        raw = state.get("custom_sessions", [])
+        return [str(x) for x in raw] if isinstance(raw, list) else []
+
+    def register_custom_session_name(self, filename: str, activate: bool = True) -> None:
+        now = time.time()
+
+        def _mutate(state: Dict[str, Any]):
+            custom = state.setdefault("custom_sessions", [])
+            if filename not in custom:
+                custom.append(filename)
+            if activate:
+                state["active_session"] = filename
+                state["sync_cursor"] = 15.0
+                state["sync_last_wall_ts"] = now
+                state["sync_reset_ts"] = now
+                state["client_cursors"] = {}
+
+        self._update_shared_state(_mutate)
+
     def set_active_session_name(self, filename: str) -> None:
         now = time.time()
 
         def _mutate(state: Dict[str, Any]):
             state["active_session"] = filename
-            state["sync_cursor"] = 0.0
+            state["sync_cursor"] = 15.0
             state["sync_last_wall_ts"] = now
+            state["sync_reset_ts"] = now
             state["client_cursors"] = {}
 
         self._update_shared_state(_mutate)
@@ -322,10 +345,10 @@ state_store = PlaybackStateStore()
 
 
 def list_available_sessions() -> List[str]:
-    """Devuelve la lista de archivos .duckdb disponibles en backend/data/."""
-    if not DATA_DIR.exists():
-        return []
-    return sorted([f.name for f in DATA_DIR.glob("*.duckdb")])
+    """Devuelve la lista de archivos .duckdb disponibles en backend/data/ y sesiones registradas por clientes."""
+    disk_files = [f.name for f in DATA_DIR.glob("*.duckdb")] if DATA_DIR.exists() else []
+    custom_files = state_store.get_custom_sessions()
+    return sorted(set(disk_files + custom_files))
 
 
 def get_active_db_path() -> Path:
@@ -335,17 +358,22 @@ def get_active_db_path() -> Path:
     if candidate.exists():
         return candidate
 
-    sessions = list_available_sessions()
-    if sessions:
-        return DATA_DIR / sessions[0]
+    # Si es una sesión cargada en memoria por el cliente (DuckDB-Wasm), mantenemos su nombre lógico
+    if active_name in state_store.get_custom_sessions():
+        return DATA_DIR / active_name
+
+    disk_files = sorted([f.name for f in DATA_DIR.glob("*.duckdb")]) if DATA_DIR.exists() else []
+    if disk_files:
+        return DATA_DIR / disk_files[0]
     return DATA_DIR / DEFAULT_DB_NAME
 
 
 def set_active_session(filename: str) -> Path:
     """Cambia el archivo DuckDB activo y reinicia los cursores de reproducción."""
     candidate = DATA_DIR / filename
-    if not candidate.exists() or candidate.suffix != ".duckdb":
-        raise FileNotFoundError(f"El archivo de sesión '{filename}' no existe en data/.")
+    available = set(list_available_sessions())
+    if not candidate.exists() and filename not in available:
+        raise FileNotFoundError(f"El archivo de sesión '{filename}' no existe en data/ ni en sesiones registradas.")
     state_store.set_active_session_name(filename)
     return candidate
 
