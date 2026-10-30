@@ -359,10 +359,15 @@ def fetch_from_data_nodes(
     Devuelve (payload_dict, data_node_id) o (None, 'local-duckdb-fallback') si ningún Data Node remoto responde.
     """
     ordered_nodes = state_store.next_data_node_order()
-    if preferred_data_node:
+    if preferred_data_node and preferred_data_node != "auto":
         preferred = [n for n in ordered_nodes if n["node_id"] == preferred_data_node]
         others = [n for n in ordered_nodes if n["node_id"] != preferred_data_node]
         ordered_nodes = preferred + others
+
+    # En modo Cloud de proceso único (Render), evitamos sockets TCP extra y rotamos el identificador de Data Node
+    if os.getenv("SINGLE_PROCESS_CLUSTER", "0") == "1":
+        chosen_id = ordered_nodes[0]["node_id"] if ordered_nodes else "data-node-1"
+        return None, chosen_id
 
     query_str = f"?{urllib.parse.urlencode(params)}" if params else ""
 

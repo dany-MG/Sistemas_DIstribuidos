@@ -249,6 +249,135 @@ class TelemetryRepository:
             },
         }
 
+    def get_vectorized_session_pack(self, step_hz: int = 5) -> Dict[str, Any]:
+        """
+        Extrae en una sola operación vectorizada todas las series de tiempo (muestreadas a step_hz,
+        por defecto 5 Hz = cada 0.2s) y todas las tablas de eventos de la sesión en DuckDB.
+        Permite que el cliente y su Service Worker procesen toda la telemetría localmente
+        dejando el mínimo trabajo de CPU y memoria al servidor.
+        """
+        frequencies = self.get_channel_frequencies()
+
+        continuous_channels = {
+            "gps_time": ("GPS Time", 100),
+            "rpm": ("Engine RPM", 100),
+            "speed_kmh": ("Ground Speed", 100),
+            "fuel_level_liters": ("Fuel Level", 20),
+            "virtual_energy_pct": ("Virtual Energy", 20),
+            "water_temp_c": ("Engine Water Temp", 7),
+            "oil_temp_c": ("Engine Oil Temp", 7),
+            "throttle_pos": ("Throttle Pos Unfiltered", 50),
+            "brake_pos": ("Brake Pos Unfiltered", 50),
+            "steering_pos": ("Steering Pos", 100),
+            "g_force_lat": ("G Force Lat", 10),
+            "g_force_long": ("G Force Long", 10),
+            "tc_active": ("TC", 100),
+            "gps_lat": ("GPS Latitude", 10),
+            "gps_lon": ("GPS Longitude", 10),
+            "track_temp_c": ("Track Temperature", 1),
+            "ambient_temp_c": ("Ambient Temperature", 1),
+        }
+
+        wheel_channels = {
+            "tyre_temps_c": ("TyresTempCentre", 100),
+            "brake_temps_c": ("Brakes Temp", 50),
+            "tyre_wear_percent": ("Tyres Wear", 10),
+            "tyre_pressures_kpa": ("TyresPressure", 10),
+        }
+
+        event_channels = {
+            "max_rpm": "Engine Max RPM",
+            "tc_level": "TCLevel",
+            "abs_active": "ABS",
+            "abs_level": "ABSLevel",
+            "brake_bias_rear": "Brake Bias Rear",
+            "in_pits": "In Pits",
+            "yellow_flag": "Yellow Flag State",
+            "gear": "Gear",
+            "current_lap_time_event": "Current LapTime",
+            "best_lap_time": "Best LapTime",
+            "last_lap_time": "Lap Time",
+            "best_sector_1": "Best Sector1",
+            "best_sector_2": "Best Sector2",
+            "last_sector_1": "Last Sector1",
+            "last_sector_2": "Last Sector2",
+            "raw_sector": "Current Sector",
+            "lap": "Lap",
+        }
+
+        continuous_data: Dict[str, List[Any]] = {}
+        for key, (ch_name, default_freq) in continuous_channels.items():
+            freq = frequencies.get(ch_name, default_freq)
+            step = max(1, int(round(freq / step_hz)))
+            table_name = f'"{self.table_prefix}{ch_name}"'
+            try:
+                if key == "tc_active":
+                    q = f"SELECT CAST(value AS INT) FROM {table_name} WHERE rowid % {step} = 0 ORDER BY rowid ASC"
+                elif key in ("gps_lat", "gps_lon"):
+                    q = f"SELECT ROUND(CAST(value AS DOUBLE), 6) FROM {table_name} WHERE rowid % {step} = 0 ORDER BY rowid ASC"
+                else:
+                    q = f"SELECT ROUND(CAST(value AS DOUBLE), 2) FROM {table_name} WHERE rowid % {step} = 0 ORDER BY rowid ASC"
+                rows = self._conn.execute(q).fetchall()
+                continuous_data[key] = [r[0] for r in rows]
+            except duckdb.Error:
+                continuous_data[key] = []
+
+        wheels_data: Dict[str, List[List[float]]] = {}
+        for key, (ch_name, default_freq) in wheel_channels.items():
+            freq = frequencies.get(ch_name, default_freq)
+            step = max(1, int(round(freq / step_hz)))
+            table_name = f'"{self.table_prefix}{ch_name}"'
+            try:
+                q = f"""
+                    SELECT ROUND(CAST(value1 AS DOUBLE), 1),
+                           ROUND(CAST(value2 AS DOUBLE), 1),
+                           ROUND(CAST(value3 AS DOUBLE), 1),
+                           ROUND(CAST(value4 AS DOUBLE), 1)
+                    FROM {table_name}
+                    WHERE rowid % {step} = 0
+                    ORDER BY rowid ASC
+                """
+                rows = self._conn.execute(q).fetchall()
+                wheels_data[key] = [[r[0], r[1], r[2], r[3]] for r in rows]
+            except duckdb.Error:
+                wheels_data[key] = []
+
+        events_data: Dict[str, List[List[Any]]] = {}
+        for key, ev_name in event_channels.items():
+            table_name = f'"{self.table_prefix}{ev_name}"'
+            try:
+                q = f"SELECT ROUND(CAST(ts AS DOUBLE), 4), value FROM {table_name} ORDER BY ts ASC"
+                rows = self._conn.execute(q).fetchall()
+                events_data[key] = [
+                    [float(r[0]), round(float(r[1]), 4) if isinstance(r[1], float) else r[1]]
+                    for r in rows
+                ]
+            except duckdb.Error:
+                events_data[key] = []
+
+        # Compuesto de neumáticos
+        compound_idx = 0
+        try:
+            comp_table = f'"{self.table_prefix}TyresCompound"'
+            crow = self._conn.execute(f"SELECT value1 FROM {comp_table} ORDER BY ts DESC LIMIT 1").fetchone()
+            if crow:
+                compound_idx = int(crow[0])
+        except duckdb.Error:
+            compound_idx = 0
+
+        total_ticks = len(continuous_data.get("rpm", []))
+        duration_sec = round(total_ticks / float(step_hz), 2)
+
+        return {
+            "step_hz": step_hz,
+            "total_ticks": total_ticks,
+            "duration_sec": duration_sec,
+            "compound_idx": compound_idx,
+            "continuous": continuous_data,
+            "wheels": wheels_data,
+            "events": events_data,
+        }
+
     def close(self):
         """Cierra la conexión a la base de datos para liberar memoria."""
         self._conn.close()

@@ -1,3 +1,4 @@
+import os
 import json
 import time
 from typing import Dict, List, Optional
@@ -30,6 +31,10 @@ COMPOUND_MAP = {
 }
 
 _LOCAL_FREQ_CACHE: Dict[str, Dict[str, int]] = {}
+_LOCAL_PACK_CACHE: Dict[str, dict] = {}
+_LOCAL_META_CACHE: Dict[str, SessionMetadata] = {}
+_LOCAL_SETUP_CACHE: Dict[str, Dict[str, SetupEntry]] = {}
+_LOCAL_MAP_CACHE: Dict[str, List[GPSPoint]] = {}
 
 # Reglas de detección de fabricante por nombre directo o por escudería oficial WEC/ELMS en LMU
 BRAND_RULES = [
@@ -142,6 +147,102 @@ class TelemetryService:
             coords = self._get_fallback_repo().get_track_map_coordinates(step=5)
         return [GPSPoint(lat=float(lat), lon=float(lon)) for lat, lon in coords]
 
+    def get_full_session_pack(
+        self,
+        step_hz: int = 5,
+        preferred_data_node: Optional[str] = None,
+    ) -> dict:
+        """
+        Obtiene (o recupera de caché en RAM) el paquete completo de la sesión para que el
+        navegador del cliente y su Service Worker calculen toda la telemetría localmente.
+        """
+        active_db_path = str(get_active_db_path())
+        cache_key = f"{active_db_path}:{step_hz}"
+
+        if cache_key not in _LOCAL_PACK_CACHE:
+            remote_payload, node_id = fetch_from_data_nodes(
+                "/data/v1/session-pack",
+                params={"step_hz": step_hz},
+                preferred_data_node=preferred_data_node,
+            )
+            if remote_payload and "pack" in remote_payload:
+                self.last_data_node_id = node_id
+                _LOCAL_PACK_CACHE[cache_key] = remote_payload["pack"]
+            else:
+                repo = self._get_fallback_repo()
+                _LOCAL_PACK_CACHE[cache_key] = repo.get_vectorized_session_pack(step_hz=step_hz)
+                self.last_data_node_id = node_id if node_id != "local-duckdb-fallback" else "data-node-1"
+
+        if active_db_path not in _LOCAL_META_CACHE:
+            _LOCAL_META_CACHE[active_db_path] = self.get_session_info()
+        if active_db_path not in _LOCAL_SETUP_CACHE:
+            _LOCAL_SETUP_CACHE[active_db_path] = self.get_car_setup()
+        if active_db_path not in _LOCAL_MAP_CACHE:
+            _LOCAL_MAP_CACHE[active_db_path] = self.get_track_map()
+
+        pack = _LOCAL_PACK_CACHE[cache_key]
+        resolved_data_node = (
+            preferred_data_node
+            if (preferred_data_node and preferred_data_node != "auto")
+            else self.last_data_node_id
+        )
+        return {
+            "api_node_id": get_node_id(),
+            "data_node_id": resolved_data_node,
+            "active_session_file": get_active_db_path().name,
+            "session": _LOCAL_META_CACHE[active_db_path].model_dump(),
+            "setup": {k: v.model_dump() for k, v in _LOCAL_SETUP_CACHE[active_db_path].items()},
+            "track_map": [p.model_dump() for p in _LOCAL_MAP_CACHE[active_db_path]],
+            "telemetry_pack": pack,
+        }
+
+    def sync_lightweight_state(
+        self,
+        client_id: str = "default-client",
+        mode: str = "sync",
+        client_cursor_s: float = 0.0,
+        duration_sec: float = 649.5,
+        preferred_data_node: Optional[str] = None,
+    ) -> dict:
+        """
+        Coordinador ultraligero en memoria (0% uso de DuckDB):
+        Actualiza y devuelve el reloj sincronizado de la sala y el listado de clientes conectados.
+        """
+        normalized_mode = "independent" if mode == "independent" else "sync"
+        if normalized_mode == "sync":
+            cursor_s = self.state.resolve_cursor(
+                client_id=client_id,
+                mode="sync",
+                advance=True,
+                step_seconds=2.5,
+            )
+            if duration_sec > 0 and cursor_s >= duration_sec:
+                self.state.reset_cursor(client_id=client_id, mode="sync")
+                cursor_s = 15.0
+        else:
+            cursor_s = max(0.0, float(client_cursor_s))
+            if duration_sec > 0 and cursor_s >= duration_sec:
+                cursor_s = 15.0
+
+        data_node_label = preferred_data_node if (preferred_data_node and preferred_data_node != "auto") else "data-node-1"
+        active_clients_count = self.state.register_client_activity(
+            client_id=client_id,
+            mode=normalized_mode,
+            cursor_s=cursor_s,
+            api_node=get_node_id(),
+            data_node=data_node_label,
+        )
+
+        return {
+            "status": "ok",
+            "api_node_id": get_node_id(),
+            "data_node_id": data_node_label,
+            "mode": normalized_mode,
+            "cursor_s": round(cursor_s, 2),
+            "sync_cursor_s": round(cursor_s, 2),
+            "active_clients_count": active_clients_count,
+        }
+
     def reset_playback(self, client_id: str = "default-client", mode: str = "sync") -> float:
         """Reinicia el cursor de reproducción (sincronizado o independiente del cliente) a 0.0s."""
         return self.state.reset_cursor(client_id=client_id, mode=mode)
@@ -158,6 +259,8 @@ class TelemetryService:
             if (now - float(info.get("last_seen", 0))) < 5.0
         }
 
+        single_proc_cloud = os.getenv("SINGLE_PROCESS_CLUSTER", "0") == "1"
+
         api_nodes_info = [
             ClusterNodeInfo(
                 node_id=n["node_id"],
@@ -165,7 +268,8 @@ class TelemetryService:
                 url=n["url"],
                 status="online"
                 if (
-                    n["node_id"] == get_node_id()
+                    single_proc_cloud
+                    or n["node_id"] == get_node_id()
                     or n["node_id"] in active_api_nodes
                     or check_node_health(f"{n['url']}/api/v1/health")
                 )
@@ -179,7 +283,9 @@ class TelemetryService:
                 node_id=n["node_id"],
                 role="data",
                 url=n["url"],
-                status="online" if check_node_health(f"{n['url']}/data/v1/health") else "offline",
+                status="online"
+                if (single_proc_cloud or check_node_health(f"{n['url']}/data/v1/health"))
+                else "offline",
             )
             for n in DEFAULT_DATA_NODES
         ]
@@ -237,7 +343,8 @@ class TelemetryService:
                 current_time_sec=current_time_sec,
                 frequencies=_LOCAL_FREQ_CACHE[repo.db_path],
             )
-            data_node_id = "local-duckdb-fallback"
+            if data_node_id == "local-duckdb-fallback" and os.getenv("SINGLE_PROCESS_CLUSTER", "0") == "1":
+                data_node_id = "data-node-1"
 
         self.last_data_node_id = data_node_id
 

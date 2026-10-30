@@ -1,31 +1,42 @@
+export const DEFAULT_BACKEND_ORIGIN = (
+    import.meta.env.PUBLIC_BACKEND_URL || 'https://lmu-paddock-dashboard.onrender.com'
+).replace(/\/+$/, '');
+
 const resolveDefaultBaseUrl = (
     port: number,
     gatewayPrefix: 'node1' | 'node2',
-    envUrl?: string
+    envNodeUrl?: string
 ): string => {
-    if (envUrl && envUrl.trim() !== '') {
-        return envUrl.replace(/\/+$/, '');
+    if (envNodeUrl && envNodeUrl.trim() !== '') {
+        return envNodeUrl.replace(/\/+$/, '');
+    }
+    if (import.meta.env.PUBLIC_BACKEND_URL && import.meta.env.PUBLIC_BACKEND_URL.trim() !== '') {
+        return `${DEFAULT_BACKEND_ORIGIN}/${gatewayPrefix}/api/v1`;
     }
     if (typeof window !== 'undefined' && window.location) {
-        // Si entramos desde una URL web pública (HTTPS, Render, Railway, Túnel) o desde el Gateway (:8080),
-        // enrutamos sobre el mismo origen (/node1/api/v1 y /node2/api/v1) sin depender de puertos externos
-        if (window.location.port !== '4321') {
+        const host = window.location.hostname;
+        const isLocal = host === 'localhost' || host === '127.0.0.1';
+        if (isLocal && window.location.port === '4321') {
+            return `http://${host}:${port}/api/v1`;
+        }
+        if (isLocal && window.location.port === '8080') {
             return `${window.location.origin}/${gatewayPrefix}/api/v1`;
         }
-        return `${window.location.protocol}//${window.location.hostname}:${port}/api/v1`;
+        // En Vercel o cualquier dominio público, apuntamos al backend de Render
+        return `${DEFAULT_BACKEND_ORIGIN}/${gatewayPrefix}/api/v1`;
     }
-    return `http://localhost:${port}/api/v1`;
+    return `${DEFAULT_BACKEND_ORIGIN}/${gatewayPrefix}/api/v1`;
 };
 
 export const getApiNodes = () => [
     {
         id: 'api-node-1',
-        label: 'API Node 1 (:8000)',
+        label: 'API Node 1 (Primary)',
         baseUrl: resolveDefaultBaseUrl(8000, 'node1', import.meta.env.PUBLIC_API_NODE_1_URL),
     },
     {
         id: 'api-node-2',
-        label: 'API Node 2 (:8001)',
+        label: 'API Node 2 (Replica)',
         baseUrl: resolveDefaultBaseUrl(8001, 'node2', import.meta.env.PUBLIC_API_NODE_2_URL),
     },
 ];
@@ -37,6 +48,19 @@ export const DATA_NODES = [
     { id: 'data-node-1', label: 'DuckDB Node 1 (:8011)' },
     { id: 'data-node-2', label: 'DuckDB Node 2 (:8012)' },
 ];
+
+export const registerTelemetryServiceWorker = async (): Promise<boolean> => {
+    if (typeof window === 'undefined' || !('serviceWorker' in navigator)) {
+        return false;
+    }
+    try {
+        const reg = await navigator.serviceWorker.register('/sw.js', { scope: '/' });
+        return Boolean(reg);
+    } catch (err) {
+        console.warn('Service Worker no pudo registrarse:', err);
+        return false;
+    }
+};
 
 export const getClientId = (): string => {
     if (typeof window === 'undefined') return 'ssr-client';
@@ -112,7 +136,6 @@ export const detectCarBrandSlug = (
         }
     }
 
-    // Mapeo exacto a los archivos .webp disponibles en public/cars/ según clase (GT3 vs Hypercar)
     if (baseSlug === 'ferrari') {
         return isHypercar ? 'ferrari_hyp' : 'ferrari_gt3';
     }
@@ -141,23 +164,23 @@ export const getCarImageUrl = (
     return `/cars/${slug}.webp`;
 };
 
-export const buildStreamUrl = (
-    apiBaseUrl: string,
-    clientId: string,
-    mode: 'sync' | 'independent',
-    dataNode: string = 'auto'
-): string => {
-    const params = new URLSearchParams({
-        client_id: clientId,
-        mode,
-        data_node: dataNode,
-    });
-    return `${apiBaseUrl}/stream?${params.toString()}`;
-};
+async function fetchWithTimeout(url: string, timeoutMs: number = 2500, options?: RequestInit) {
+    const controller = new AbortController();
+    const id = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+        const resp = await fetch(url, { ...options, signal: controller.signal });
+        clearTimeout(id);
+        return resp;
+    } catch (err) {
+        clearTimeout(id);
+        throw err;
+    }
+}
 
 async function fetchWithFailover(
     path: string,
     preferredBaseUrl: string,
+    timeoutMs: number = 2500,
     options?: RequestInit
 ): Promise<{ data: any; activeBaseUrl: string } | null> {
     const dynamicNodes = getApiNodes();
@@ -168,7 +191,7 @@ async function fetchWithFailover(
 
     for (const baseUrl of candidates) {
         try {
-            const response = await fetch(`${baseUrl}${path}`, options);
+            const response = await fetchWithTimeout(`${baseUrl}${path}`, timeoutMs, options);
             if (response.ok) {
                 const data = await response.json();
                 return { data, activeBaseUrl: baseUrl };
@@ -180,28 +203,75 @@ async function fetchWithFailover(
     return null;
 }
 
-export const fetchDashboardData = async (
-    apiBaseUrl: string = API_NODES[0].baseUrl,
-    clientId: string = 'default-client',
-    mode: 'sync' | 'independent' = 'sync',
+/**
+ * Carga el paquete vectorizado de la sesión:
+ * 1. Primero carga instantáneamente desde el paquete local/Service Worker (/data/sebring_session_pack.json)
+ *    para que el Dashboard en Vercel se renderice en < 50 ms sin esperar a que Render despierte.
+ * 2. En segundo plano, despierta al servidor de Render y sincroniza si hay otra sesión seleccionada.
+ */
+export const loadInitialSessionPackFast = async (
+    preferredBaseUrl: string = API_NODES[0].baseUrl,
+    dataNode: string = 'auto'
+): Promise<{ packData: any; source: 'sw_local_edge' | 'remote_server' }> => {
+    // 1. Carga inmediata desde el Service Worker / Edge CDN de Vercel (0 espera de cold start)
+    try {
+        const localResp = await fetch('/data/sebring_session_pack.json');
+        if (localResp.ok) {
+            const packData = await localResp.json();
+            // Despertamos a Render en segundo plano sin bloquear la UI
+            fetchWithFailover(`/health`, preferredBaseUrl, 15000).catch(() => {});
+            return { packData, source: 'sw_local_edge' };
+        }
+    } catch {
+        // Si no existe localmente, consultamos al servidor remoto
+    }
+
+    // 2. Consulta al servidor remoto
+    const params = new URLSearchParams({ step_hz: '5', data_node: dataNode });
+    const remoteRes = await fetchWithFailover(`/session-pack?${params.toString()}`, preferredBaseUrl, 8000);
+    if (remoteRes?.data) {
+        return { packData: remoteRes.data, source: 'remote_server' };
+    }
+
+    return { packData: null, source: 'sw_local_edge' };
+};
+
+export const fetchRemoteSessionPack = async (
+    preferredBaseUrl: string = API_NODES[0].baseUrl,
+    dataNode: string = 'auto'
+) => {
+    const params = new URLSearchParams({ step_hz: '5', data_node: dataNode });
+    const res = await fetchWithFailover(`/session-pack?${params.toString()}`, preferredBaseUrl, 10000);
+    return res ? res.data : null;
+};
+
+/**
+ * Sincronización ultraligera con el servidor en Render (~150 bytes, 0% uso de DuckDB).
+ * Si Render sigue despertando (cold start), devuelve null sin afectar el procesamiento en el cliente.
+ */
+export const syncClientStateWithServer = async (
+    apiBaseUrl: string,
+    clientId: string,
+    mode: 'sync' | 'independent',
+    cursorSec: number,
+    durationSec: number,
     dataNode: string = 'auto'
 ) => {
     const params = new URLSearchParams({
         client_id: clientId,
         mode,
+        cursor_s: cursorSec.toFixed(2),
+        duration_s: durationSec.toFixed(2),
         data_node: dataNode,
     });
-    const res = await fetchWithFailover(`/dashboard?${params.toString()}`, apiBaseUrl);
+    const res = await fetchWithFailover(`/sync-state?${params.toString()}`, apiBaseUrl, 2200, {
+        method: 'POST',
+    });
     return res ? res.data : null;
 };
 
-export const fetchTrackMap = async (apiBaseUrl: string = API_NODES[0].baseUrl) => {
-    const res = await fetchWithFailover('/track-map', apiBaseUrl);
-    return res ? res.data : [];
-};
-
 export const fetchClusterStatus = async (apiBaseUrl: string = API_NODES[0].baseUrl) => {
-    const res = await fetchWithFailover('/cluster/status', apiBaseUrl);
+    const res = await fetchWithFailover('/cluster/status', apiBaseUrl, 3000);
     return res ? res.data : null;
 };
 
@@ -211,7 +281,7 @@ export const resetPlayback = async (
     mode: 'sync' | 'independent' = 'sync'
 ) => {
     const params = new URLSearchParams({ client_id: clientId, mode });
-    const res = await fetchWithFailover(`/playback/reset?${params.toString()}`, apiBaseUrl, {
+    const res = await fetchWithFailover(`/playback/reset?${params.toString()}`, apiBaseUrl, 2500, {
         method: 'POST',
     });
     return res ? res.data : null;
@@ -224,6 +294,7 @@ export const switchSession = async (
     const res = await fetchWithFailover(
         `/sessions/${encodeURIComponent(filename)}`,
         apiBaseUrl,
+        4000,
         { method: 'POST' }
     );
     return res ? res.data : null;

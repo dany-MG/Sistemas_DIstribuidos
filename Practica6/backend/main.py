@@ -1,5 +1,6 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from middleware.error_handler import TelemetryErrorMiddleware
 from routes import telemetry_routes
 from database.connection import NODE_ID, get_node_id
@@ -10,6 +11,7 @@ app = FastAPI(
     version = "2.0.0",
 )
 
+app.add_middleware(GZipMiddleware, minimum_size=500)
 app.add_middleware(TelemetryErrorMiddleware)
 
 app.add_middleware(

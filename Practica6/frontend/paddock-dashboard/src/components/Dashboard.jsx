@@ -1,16 +1,18 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useRef } from 'react';
 import {
     getApiNodes,
     DATA_NODES,
     getClientId,
-    buildStreamUrl,
-    fetchDashboardData,
-    fetchTrackMap,
     fetchClusterStatus,
     resetPlayback,
     switchSession,
     getCarImageUrl,
+    registerTelemetryServiceWorker,
+    loadInitialSessionPackFast,
+    fetchRemoteSessionPack,
+    syncClientStateWithServer,
 } from '../services/api';
+import { TelemetryClientEngine } from '../services/telemetryEngine';
 import { LineChart, Line, YAxis, ResponsiveContainer } from 'recharts';
 
 const formatTime = (timeInSeconds) => {
@@ -336,30 +338,84 @@ export default function Dashboard() {
     const [clusterStatus, setClusterStatus] = useState(null);
     const [loading, setLoading] = useState(true);
     const [connectionError, setConnectionError] = useState(false);
+    const [backendOnline, setBackendOnline] = useState(false);
     const [telemetryHistory, setTelemetryHistory] = useState([]);
     const [isPaused, setIsPaused] = useState(false);
     const [showSetupModal, setShowSetupModal] = useState(false);
     const [showClusterModal, setShowClusterModal] = useState(false);
 
+    // Referencias para el Motor de Telemetría del Cliente (5 Hz local sin carga al servidor)
+    const engineRef = useRef(null);
+    const cursorRef = useRef(15.0);
+    const syncMetaRef = useRef({
+        api_node_id: 'client-sw-engine',
+        data_node_id: 'edge-pack',
+        active_clients_count: 1,
+        playback_mode: 'sync',
+    });
+
+    const applyPackPayload = (packPayload, mode) => {
+        if (!packPayload || !packPayload.telemetry_pack) return false;
+
+        const engine = new TelemetryClientEngine(packPayload.telemetry_pack);
+        engineRef.current = engine;
+
+        const initialCursor = engine.clampCursor(cursorRef.current);
+        cursorRef.current = initialCursor;
+
+        const resolvedApiNode = packPayload.api_node_id || packPayload.cluster?.current_api_node || syncMetaRef.current.api_node_id;
+        const resolvedDataNode = packPayload.data_node_id || syncMetaRef.current.data_node_id;
+
+        syncMetaRef.current = {
+            ...syncMetaRef.current,
+            api_node_id: resolvedApiNode,
+            data_node_id: resolvedDataNode,
+            playback_mode: mode,
+        };
+
+        const initialSnapshot = engine.computeSnapshotAt(initialCursor, syncMetaRef.current);
+
+        setTrackCoords(packPayload.track_map || []);
+        if (packPayload.cluster) {
+            setClusterStatus(packPayload.cluster);
+        }
+
+        setData({
+            status: 'Session Pack Loaded (Client Engine)',
+            session: packPayload.session || {},
+            setup: packPayload.setup || {},
+            available_sessions: packPayload.available_sessions || ['sebring_session.duckdb'],
+            active_session_file: packPayload.active_session_file || 'sebring_session.duckdb',
+            current_telemetry: initialSnapshot,
+        });
+        setTelemetryHistory(initialSnapshot ? [initialSnapshot] : []);
+        return true;
+    };
+
+    // 1. Registro del Service Worker y carga instantánea del Session Pack (Caché / Edge / Render)
     useEffect(() => {
         let isMounted = true;
+        registerTelemetryServiceWorker();
 
         const initializePitWall = async () => {
-            const [mapPoints, initialData] = await Promise.all([
-                fetchTrackMap(selectedApiNodeUrl),
-                fetchDashboardData(selectedApiNodeUrl, clientId, playbackMode, selectedDataNode)
-            ]);
+            const packPayload = await loadInitialSessionPackFast(selectedApiNodeUrl, selectedDataNode);
+            if (!isMounted) return;
 
-            if (isMounted && initialData) {
-                setTrackCoords(mapPoints || []);
-                setData(initialData);
-                setClusterStatus(initialData.cluster || null);
-                setTelemetryHistory(initialData.current_telemetry ? [initialData.current_telemetry] : []);
+            if (packPayload && applyPackPayload(packPayload, playbackMode)) {
                 setLoading(false);
-            } else if (isMounted) {
+            } else {
                 setConnectionError(true);
                 setLoading(false);
             }
+
+            // Revalidación silenciosa con el backend de Render una vez que despierte
+            fetchRemoteSessionPack(selectedApiNodeUrl, selectedDataNode).then((remotePack) => {
+                if (isMounted && remotePack && remotePack.telemetry_pack) {
+                    setBackendOnline(true);
+                    setConnectionError(false);
+                    applyPackPayload(remotePack, playbackMode);
+                }
+            });
         };
 
         initializePitWall();
@@ -369,56 +425,118 @@ export default function Dashboard() {
         };
     }, []);
 
-    // Conexión SSE con soporte Multi-Cliente (mode='sync'|'independent'), Multi-Servidor y Failover automático
+    // 2. Motor de Telemetría en el Cliente a 5 Hz (200 ms) — 0% consultas por tick a DuckDB en el servidor
     useEffect(() => {
         if (loading || isPaused) return;
 
-        const streamUrl = buildStreamUrl(selectedApiNodeUrl, clientId, playbackMode, selectedDataNode);
-        const eventSource = new EventSource(streamUrl);
+        const tickInterval = setInterval(() => {
+            const engine = engineRef.current;
+            if (!engine) return;
 
-        eventSource.onmessage = (event) => {
-            const liveTelemetry = JSON.parse(event.data);
-            setData(prevData => prevData ? ({
-                ...prevData,
-                current_telemetry: liveTelemetry
-            }) : prevData);
-            setTelemetryHistory(prevHistory => {
-                const newHistory = [...prevHistory, liveTelemetry];
-                return newHistory.slice(-100);
+            cursorRef.current = engine.advanceCursor(cursorRef.current, 0.2);
+            const liveTelemetry = engine.computeSnapshotAt(cursorRef.current, {
+                ...syncMetaRef.current,
+                playback_mode: playbackMode,
             });
-            setConnectionError(false);
-        };
 
-        eventSource.onerror = () => {
-            setConnectionError(true);
-            eventSource.close();
-            // Failover automático al otro Servidor API del clúster tras 1.2s si el nodo actual cae
-            const fallbackNode = apiNodes.find(n => n.baseUrl !== selectedApiNodeUrl);
-            if (fallbackNode) {
-                setTimeout(() => {
+            if (liveTelemetry) {
+                setData(prevData => prevData ? ({
+                    ...prevData,
+                    current_telemetry: liveTelemetry,
+                }) : prevData);
+
+                setTelemetryHistory(prevHistory => {
+                    const nextHistory = [...prevHistory, liveTelemetry];
+                    return nextHistory.slice(-100);
+                });
+            }
+        }, 200);
+
+        return () => clearInterval(tickInterval);
+    }, [loading, isPaused, playbackMode]);
+
+    // 3. Sincronización ultraligera de reloj y presencia con Render cada 2.5s (sin bloquear la UI)
+    useEffect(() => {
+        if (loading) return;
+        let isMounted = true;
+
+        const syncWithBackend = async () => {
+            const syncResp = await syncClientStateWithServer(
+                selectedApiNodeUrl,
+                clientId,
+                playbackMode,
+                cursorRef.current,
+                selectedDataNode
+            );
+
+            if (!isMounted) return;
+
+            if (syncResp) {
+                setBackendOnline(true);
+                setConnectionError(false);
+
+                // En modo sincronizado, alineamos suavemente el cursor local con el reloj maestro del servidor
+                if (playbackMode === 'sync' && typeof syncResp.cursor_s === 'number') {
+                    const drift = Math.abs(cursorRef.current - syncResp.cursor_s);
+                    if (drift > 0.8) {
+                        cursorRef.current = syncResp.cursor_s;
+                    }
+                }
+
+                syncMetaRef.current = {
+                    api_node_id: syncResp.api_node_id || 'api-node-1',
+                    data_node_id: syncResp.data_node_id || (selectedDataNode === 'auto' ? 'data-node-1' : selectedDataNode),
+                    active_clients_count: syncResp.active_clients_count || 1,
+                    playback_mode: playbackMode,
+                };
+            } else {
+                // Si el nodo actual tarda o Render está despertando del Free Tier, conmutamos sin congelar la UI
+                setBackendOnline(false);
+                const currentNodeObj = apiNodes.find(n => n.baseUrl === selectedApiNodeUrl);
+                syncMetaRef.current = {
+                    ...syncMetaRef.current,
+                    api_node_id: currentNodeObj?.id || 'client-sw-engine',
+                    data_node_id: selectedDataNode === 'auto' ? 'sw-cache-pack' : selectedDataNode,
+                    playback_mode: playbackMode,
+                };
+                const fallbackNode = apiNodes.find(n => n.baseUrl !== selectedApiNodeUrl);
+                if (fallbackNode) {
                     setSelectedApiNodeUrl(fallbackNode.baseUrl);
-                }, 1200);
+                }
             }
         };
 
+        syncWithBackend();
+        const syncTimer = setInterval(syncWithBackend, 2500);
+
         return () => {
-            eventSource.close();
+            isMounted = false;
+            clearInterval(syncTimer);
         };
-    }, [loading, isPaused, selectedApiNodeUrl, clientId, playbackMode, selectedDataNode]);
+    }, [loading, selectedApiNodeUrl, clientId, playbackMode, selectedDataNode]);
 
     const handleRefreshCluster = async () => {
         const status = await fetchClusterStatus(selectedApiNodeUrl);
-        if (status) setClusterStatus(status);
+        if (status) {
+            setClusterStatus(status);
+            setBackendOnline(true);
+        }
     };
 
     const handleResetPlayback = async () => {
-        await resetPlayback(selectedApiNodeUrl, clientId, playbackMode);
+        const engine = engineRef.current;
+        cursorRef.current = engine ? engine.getStartTime() : 15.0;
         setTelemetryHistory([]);
+        await resetPlayback(selectedApiNodeUrl, clientId, playbackMode);
     };
 
     const handleToggleMode = (newMode) => {
         if (newMode === playbackMode) return;
         setPlaybackMode(newMode);
+        syncMetaRef.current = {
+            ...syncMetaRef.current,
+            playback_mode: newMode,
+        };
         setTelemetryHistory([]);
     };
 
@@ -427,15 +545,9 @@ export default function Dashboard() {
         if (!newSession) return;
         setLoading(true);
         await switchSession(newSession, selectedApiNodeUrl);
-        const [mapPoints, initialData] = await Promise.all([
-            fetchTrackMap(selectedApiNodeUrl),
-            fetchDashboardData(selectedApiNodeUrl, clientId, playbackMode, selectedDataNode)
-        ]);
-        if (initialData) {
-            setTrackCoords(mapPoints || []);
-            setData(initialData);
-            setClusterStatus(initialData.cluster || null);
-            setTelemetryHistory(initialData.current_telemetry ? [initialData.current_telemetry] : []);
+        const remotePack = await fetchRemoteSessionPack(selectedApiNodeUrl, selectedDataNode);
+        if (remotePack) {
+            applyPackPayload(remotePack, playbackMode);
         }
         setLoading(false);
     };
@@ -535,6 +647,17 @@ export default function Dashboard() {
 
                             <span className="px-2 py-1 rounded bg-emerald-500/10 border border-emerald-500/30 text-emerald-300">
                                 CLIENTES EN SALA: <strong>{tel.active_clients_count || 1}</strong>
+                            </span>
+
+                            <span
+                                className={`px-2 py-1 rounded border text-[10px] font-bold ${
+                                    backendOnline
+                                        ? 'bg-cyan-500/10 border-cyan-500/30 text-cyan-300'
+                                        : 'bg-amber-500/10 border-amber-500/30 text-amber-300'
+                                }`}
+                                title="El procesamiento pesado de telemetría corre en el navegador (Client Engine + Service Worker)"
+                            >
+                                {backendOnline ? 'SW + RENDER SYNC ONLINE' : 'SW EDGE CACHE (RENDER STANDBY)'}
                             </span>
 
                             {/* Switch Sincronizado vs Independiente */}

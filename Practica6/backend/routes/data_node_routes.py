@@ -9,8 +9,9 @@ from repositories.telemetry_repository import TelemetryRepository
 
 router = APIRouter(tags=["DuckDB Telemetry Data Node"])
 
-# Caché en memoria de frecuencias por archivo .duckdb en el Data Node
+# Caché en memoria de frecuencias y paquetes vectorizados por archivo .duckdb en el Data Node
 _FREQUENCIES_CACHE: Dict[str, Dict[str, int]] = {}
+_SESSION_PACK_CACHE: Dict[str, dict] = {}
 
 
 def get_duckdb_repository():
@@ -81,6 +82,27 @@ def get_raw_track_map(
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Error en Data Node ({get_node_id()}) leyendo track-map: {e}")
+
+
+@router.get("/session-pack")
+def get_raw_session_pack(
+    step_hz: int = Query(default=5, ge=1, le=20),
+    repo: TelemetryRepository = Depends(get_duckdb_repository),
+):
+    """
+    Devuelve el paquete vectorizado completo de la sesión .duckdb (cacheado en RAM)
+    para que el cliente y su Service Worker procesen todos los ticks localmente.
+    """
+    cache_key = f"{repo.db_path}:{step_hz}"
+    try:
+        if cache_key not in _SESSION_PACK_CACHE:
+            _SESSION_PACK_CACHE[cache_key] = repo.get_vectorized_session_pack(step_hz=step_hz)
+        return {
+            "data_node_id": get_node_id(),
+            "pack": _SESSION_PACK_CACHE[cache_key],
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error en Data Node ({get_node_id()}) generando session-pack: {e}")
 
 
 @router.get("/snapshot-bundle")

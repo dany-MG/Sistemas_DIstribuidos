@@ -49,6 +49,45 @@ def api_health_check():
     }
 
 
+@router.get("/session-pack")
+def get_session_pack(
+    step_hz: int = Query(default=5, ge=1, le=20),
+    data_node: Optional[str] = Query(default=None),
+    service: TelemetryService = Depends(get_telemetry_service),
+):
+    """
+    Entrega en una sola petición comprimida todas las series de tiempo y eventos
+    para que el Cliente y su Service Worker procesen la telemetría localmente.
+    """
+    try:
+        pref_node = data_node if data_node and data_node != "auto" else None
+        return service.get_full_session_pack(step_hz=step_hz, preferred_data_node=pref_node)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error generando session-pack: {str(e)}")
+
+
+@router.api_route("/sync-state", methods=["GET", "POST"])
+def sync_lightweight_state(
+    client_id: str = Query(default="default-client"),
+    mode: str = Query(default="sync"),
+    cursor_s: float = Query(default=0.0),
+    duration_s: float = Query(default=649.5),
+    data_node: Optional[str] = Query(default=None),
+    service: TelemetryService = Depends(get_telemetry_service),
+):
+    """
+    Endpoint ultraligero (0% consultas a DuckDB): sincroniza el reloj maestro de la sala
+    y actualiza la presencia del cliente en la tabla MC-MS.
+    """
+    return service.sync_lightweight_state(
+        client_id=client_id,
+        mode=mode,
+        client_cursor_s=cursor_s,
+        duration_sec=duration_s,
+        preferred_data_node=data_node,
+    )
+
+
 @router.get("/cluster/status", response_model=ClusterStatusResponse)
 def get_cluster_status(service: TelemetryService = Depends(get_telemetry_service)):
     """Devuelve la topología en vivo de Nodos API, Nodos de Datos (.duckdb) y Clientes Conectados."""
