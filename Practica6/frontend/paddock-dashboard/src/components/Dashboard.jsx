@@ -9,6 +9,7 @@ import {
     resetPlayback,
     switchSession,
     getCarImageUrl,
+    resolveCarCategory,
     registerTelemetryServiceWorker,
     loadInitialSessionPackFast,
     fetchRemoteSessionPack,
@@ -718,9 +719,9 @@ export default function Dashboard() {
     }
 
     const tel = data?.current_telemetry || {};
-    const rawSteering = tel.steering_pos || 0;
-    const normalizedSteering = Math.abs(rawSteering) <= 1.0 ? rawSteering * 100 : rawSteering;
-    const steeringDeg = (normalizedSteering / 100) * 270;
+    const rawSteering = Number(tel.steering_pos || 0);
+    const clampedSteeringPct = Math.max(-100, Math.min(100, rawSteering));
+    const steeringDeg = (clampedSteeringPct / 100) * 270;
 
     const maxRpm = tel.max_rpm > 0 ? tel.max_rpm : 9500;
     const rpmPercent = Math.min(100, Math.max(0, ((tel.rpm || 0) / maxRpm) * 100));
@@ -732,6 +733,10 @@ export default function Dashboard() {
         data?.session?.car_name,
         data?.session?.car_brand,
         data?.session?.car_class
+    );
+    const carCategory = resolveCarCategory(
+        data?.session?.car_class || data?.session?.CarClass,
+        data?.session?.car_name || data?.session?.CarName
     );
 
     const activeMsCount = Object.values(msHealthMap).filter(Boolean).length;
@@ -966,14 +971,11 @@ export default function Dashboard() {
                                     </h1>
                                     <div className="flex flex-wrap items-center gap-2 mt-3 text-[10px] font-mono">
                                         <span className="text-red-400 bg-red-500/10 border border-red-500/30 px-2 py-1 rounded font-bold uppercase">
-                                            MARCA: {data.session.car_brand || 'PORSCHE'}
+                                            CATEGORÍA: {carCategory}
                                         </span>
 
                                         <span className="text-blue-400 bg-blue-500/10 border border-blue-500/20 px-2 py-1 rounded">
                                             {data.session.car_name || data.session.CarName || 'DESCONOCIDO'}
-                                            <span className="text-blue-500 ml-1">
-                                                ({data.session.car_class || data.session.CarClass || 'N/A'})
-                                            </span>
                                         </span>
 
                                         <span className="text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 px-2 py-1 rounded">
@@ -1401,12 +1403,12 @@ export default function Dashboard() {
                                             <div className="absolute top-2 left-0 text-[10px] text-neutral-500 font-mono z-10 flex justify-between w-full pr-2">
                                                 <span>Steering</span>
                                                 <span className="text-neutral-200 font-bold">
-                                                    {(tel.steering_pos || 0).toFixed(1)} %
+                                                    {clampedSteeringPct.toFixed(1)} % ({steeringDeg.toFixed(1)}°)
                                                 </span>
                                             </div>
                                             <ResponsiveContainer width="100%" height="100%">
                                                 <LineChart data={telemetryHistory}>
-                                                    <YAxis domain={['auto', 'auto']} hide />
+                                                    <YAxis domain={[-100, 100]} hide />
                                                     <Line
                                                         type="monotone"
                                                         dataKey="steering_pos"

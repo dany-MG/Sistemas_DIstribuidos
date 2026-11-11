@@ -186,6 +186,63 @@ export const getCarImageUrl = (
     return `/cars/${slug}.webp`;
 };
 
+/**
+ * Normaliza la categoría oficial de Le Mans Ultimate (WEC / ELMS):
+ * Devuelve siempre una de: 'LMGT3' | 'GTE' | 'LMP2' | 'LMP2 ELMS' | 'LMP3' | 'HY'
+ */
+export const resolveCarCategory = (carClass?: string, carName?: string): string => {
+    const cls = (carClass || '').trim().toUpperCase();
+    const name = (carName || '').trim().toUpperCase();
+    const combined = `${cls} ${name}`;
+
+    if (
+        cls.includes('LMP3') ||
+        name.includes('LMP3') ||
+        name.includes('P320') ||
+        name.includes('DUQUEINE') ||
+        name.includes('GINETTA G61')
+    ) {
+        return 'LMP3';
+    }
+
+    if (cls.includes('LMP2') || name.includes('ORECA 07') || name.includes('LMP2')) {
+        if (cls.includes('ELMS') || name.includes(':ELMS') || name.includes(' ELMS')) {
+            return 'LMP2 ELMS';
+        }
+        return 'LMP2';
+    }
+
+    if (cls.includes('GTE') || name.includes('GTE') || name.includes('RSR-19')) {
+        return 'GTE';
+    }
+
+    if (
+        cls === 'HY' ||
+        cls.includes('HYPER') ||
+        cls.includes('LMH') ||
+        cls.includes('LMDH') ||
+        cls.includes('GTP') ||
+        combined.includes('499P') ||
+        combined.includes('963') ||
+        combined.includes('GR010') ||
+        combined.includes('9X8') ||
+        combined.includes('V-SERIES') ||
+        combined.includes('A424') ||
+        combined.includes('SC63') ||
+        combined.includes('M HYBRID') ||
+        combined.includes('VALKYRIE') ||
+        combined.includes('GMR-001')
+    ) {
+        return 'HY';
+    }
+
+    if (cls.includes('GT3') || cls.includes('LMGT3')) {
+        return 'LMGT3';
+    }
+
+    return 'LMGT3';
+};
+
 async function fetchWithTimeout(url: string, timeoutMs: number = 2500, options?: RequestInit) {
     const controller = new AbortController();
     const id = setTimeout(() => controller.abort(), timeoutMs);

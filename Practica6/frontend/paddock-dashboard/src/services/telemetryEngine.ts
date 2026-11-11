@@ -69,11 +69,25 @@ export class TelemetryClientEngine {
     public readonly totalTicks: number;
     public readonly durationSec: number;
 
+    private steeringScale: number = 1.0;
+
     constructor(telemetryPack: any) {
         this.pack = telemetryPack || {};
         this.stepHz = Number(this.pack.step_hz || 20);
         this.totalTicks = Number(this.pack.total_ticks || 1);
         this.durationSec = Number(this.pack.duration_sec || 649.5);
+
+        // Detectamos una sola vez por sesión si el canal 'steering_pos' viene en rango [-1, 1] o en porcentaje [-100, 100]
+        const steeringArr: number[] = this.pack?.continuous?.steering_pos || [];
+        if (steeringArr.length > 0) {
+            let maxAbs = 0;
+            const step = Math.max(1, Math.floor(steeringArr.length / 500));
+            for (let i = 0; i < steeringArr.length; i += step) {
+                const v = Math.abs(Number(steeringArr[i] || 0));
+                if (v > maxAbs) maxAbs = v;
+            }
+            this.steeringScale = maxAbs > 0 && maxAbs <= 1.05 ? 100.0 : 1.0;
+        }
     }
 
     public getStartTime(): number {
@@ -223,7 +237,7 @@ export class TelemetryClientEngine {
 
             throttle_pos: this.readScalar('throttle_pos', exactTick, 0),
             brake_pos: this.readScalar('brake_pos', exactTick, 0),
-            steering_pos: this.readScalar('steering_pos', exactTick, 0),
+            steering_pos: this.readScalar('steering_pos', exactTick, 0) * this.steeringScale,
             g_force_lat: this.readScalar('g_force_lat', exactTick, 0),
             g_force_long: this.readScalar('g_force_long', exactTick, 0),
 
