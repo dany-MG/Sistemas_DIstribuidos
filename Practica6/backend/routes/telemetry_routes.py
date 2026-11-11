@@ -15,6 +15,18 @@ from database.connection import (
 )
 from repositories.telemetry_repository import TelemetryRepository
 from services.telemetry_service import TelemetryService
+from microservices.registry import (
+    get_all_microservices_status,
+    require_service_active,
+    toggle_service,
+)
+from microservices import (
+    track_map_ms,
+    car_setup_ms,
+    session_catalog_ms,
+    telemetry_pack_ms,
+    room_sync_ms,
+)
 from models.schemas import (
     SessionMetadata,
     TelemetrySnapshot,
@@ -24,6 +36,40 @@ from models.schemas import (
 )
 
 router = APIRouter(tags=["Telemetry Dashboard"])
+
+# Sub-routers de los 5 Microservicios Atómicos accesibles también bajo /api/v1/ms/*
+router.include_router(track_map_ms.router, prefix="/ms/track-map")
+router.include_router(car_setup_ms.router, prefix="/ms/car-setup")
+router.include_router(session_catalog_ms.router, prefix="/ms/session-catalog")
+router.include_router(telemetry_pack_ms.router, prefix="/ms/telemetry-pack")
+router.include_router(room_sync_ms.router, prefix="/ms/room-sync")
+
+
+@router.get("/microservices/status")
+def get_microservices_status():
+    """Devuelve el estado de salud, aislamiento y métricas de los 5 microservicios atómicos."""
+    return get_all_microservices_status()
+
+
+@router.post("/microservices/{ms_id}/toggle")
+def toggle_microservice_state(
+    ms_id: str,
+    enabled: Optional[bool] = Query(default=None),
+):
+    """
+    Activa o desactiva (simula caída HTTP 503) un microservicio específico para
+    demostrar la resiliencia y el aislamiento de fallos (Bulkhead) en la PWA.
+    """
+    try:
+        updated = toggle_service(ms_id, enabled=enabled)
+        return {
+            "status": "ok",
+            "microservice": updated,
+            "cluster_microservices": get_all_microservices_status(),
+        }
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
 
 
 def get_telemetry_service():
@@ -62,6 +108,7 @@ def get_session_pack(
     Entrega en una sola petición comprimida todas las series de tiempo y eventos
     para que el Cliente y su Service Worker procesen la telemetría localmente.
     """
+    require_service_active("ms-telemetry-pack")
     try:
         pref_node = data_node if data_node and data_node != "auto" else None
         return service.get_full_session_pack(step_hz=step_hz, preferred_data_node=pref_node)
@@ -82,6 +129,7 @@ def sync_lightweight_state(
     Endpoint ultraligero (0% consultas a DuckDB): sincroniza el reloj maestro de la sala
     y actualiza la presencia del cliente en la tabla MC-MS.
     """
+    require_service_active("ms-room-sync")
     return service.sync_lightweight_state(
         client_id=client_id,
         mode=mode,
@@ -204,6 +252,7 @@ def reset_playback_cursor(
 @router.get("/session", response_model=SessionMetadata)
 def get_session_info(service: TelemetryService = Depends(get_telemetry_service)):
     """Devuelve los metadatos de la sesión actual de LMU (incluyendo car_brand)."""
+    require_service_active("ms-session-catalog")
     try:
         return service.get_session_info()
     except Exception as e:
@@ -213,6 +262,7 @@ def get_session_info(service: TelemetryService = Depends(get_telemetry_service))
 @router.get("/setup")
 def get_car_setup(service: TelemetryService = Depends(get_telemetry_service)):
     """Devuelve el JSON parseado del setup del vehículo."""
+    require_service_active("ms-car-setup")
     try:
         return service.get_car_setup()
     except Exception as e:
@@ -276,6 +326,7 @@ def get_full_dashboard(
 @router.get("/track-map", response_model=List[GPSPoint])
 def get_track_map(service: TelemetryService = Depends(get_telemetry_service)):
     """Devuelve la nube de puntos GPS estática para dibujar el mapa del circuito."""
+    require_service_active("ms-track-map")
     try:
         return service.get_track_map()
     except Exception as e:

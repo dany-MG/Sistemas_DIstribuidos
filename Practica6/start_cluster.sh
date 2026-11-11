@@ -63,6 +63,18 @@ start_node "data-node-2" "data" "data_node_main:app" 8012 "/tmp/lmu_data_node_2.
 start_node "api-node-1" "api" "main:app" 8000 "/tmp/lmu_api_node_1.log"
 start_node "api-node-2" "api" "main:app" 8001 "/tmp/lmu_api_node_2.log"
 
+# 3. Microservicios Atómicos Independientes (Si se solicita '--with-ms' o por defecto como rutas en API/Gateway)
+if [ "${1:-}" = "--with-ms" ]; then
+    echo "------------------------------------------------------------"
+    echo " Levantando 5 Microservicios Atómicos en puertos dedicados:"
+    echo "------------------------------------------------------------"
+    start_node "ms-track-map" "microservice" "microservices.track_map_ms:app" 8021 "/tmp/lmu_ms_track_map.log"
+    start_node "ms-car-setup" "microservice" "microservices.car_setup_ms:app" 8022 "/tmp/lmu_ms_car_setup.log"
+    start_node "ms-session-catalog" "microservice" "microservices.session_catalog_ms:app" 8023 "/tmp/lmu_ms_session_catalog.log"
+    start_node "ms-telemetry-pack" "microservice" "microservices.telemetry_pack_ms:app" 8024 "/tmp/lmu_ms_telemetry_pack.log"
+    start_node "ms-room-sync" "microservice" "microservices.room_sync_ms:app" 8025 "/tmp/lmu_ms_room_sync.log"
+fi
+
 echo "============================================================"
 echo " Clúster listo. Usa './start_cluster.sh stop' para detener."
 echo "============================================================"

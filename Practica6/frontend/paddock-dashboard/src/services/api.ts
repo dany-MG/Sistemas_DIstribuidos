@@ -225,6 +225,135 @@ async function fetchWithFailover(
     return null;
 }
 
+export interface MicroserviceResponse<T = any> {
+    ok: boolean;
+    status: number;
+    data: T | null;
+    error: string | null;
+    msId: string;
+}
+
+/**
+ * Cliente HTTP con aislamiento de fallos (Circuit Breaker / Bulkhead) para Microservicios:
+ * - Si un microservicio responde HTTP 503 (caída simulada o real), detiene inmediatamente
+ *   los reintentos y retorna { ok: false, status: 503 } sin afectar a los demás microservicios.
+ */
+async function fetchMicroserviceIsolated<T = any>(
+    msId: string,
+    msSubPath: string,
+    preferredBaseUrl: string = API_NODES[0].baseUrl,
+    timeoutMs: number = 3000,
+    options?: RequestInit
+): Promise<MicroserviceResponse<T>> {
+    const dynamicNodes = getApiNodes();
+    const candidates = [
+        preferredBaseUrl,
+        ...dynamicNodes.map(n => n.baseUrl).filter(u => u !== preferredBaseUrl),
+    ];
+
+    let lastStatus = 0;
+    let lastError = `Sin respuesta del microservicio ${msId}`;
+
+    for (const baseUrl of candidates) {
+        try {
+            const response = await fetchWithTimeout(`${baseUrl}/ms/${msId.replace(/^ms-/, '')}${msSubPath}`, timeoutMs, options);
+            lastStatus = response.status;
+
+            if (response.status === 503) {
+                let errDetail = `Microservicio ${msId} fuera de línea (503 Service Unavailable)`;
+                try {
+                    const errBody = await response.json();
+                    if (errBody?.detail?.message) {
+                        errDetail = errBody.detail.message;
+                    }
+                } catch {}
+                return {
+                    ok: false,
+                    status: 503,
+                    data: null,
+                    error: errDetail,
+                    msId,
+                };
+            }
+
+            if (response.ok) {
+                const data = (await response.json()) as T;
+                return {
+                    ok: true,
+                    status: response.status,
+                    data,
+                    error: null,
+                    msId,
+                };
+            }
+        } catch (err: any) {
+            lastError = err?.message || `Timeout contactando ${msId}`;
+        }
+    }
+
+    return {
+        ok: false,
+        status: lastStatus || 0,
+        data: null,
+        error: lastError,
+        msId,
+    };
+}
+
+/**
+ * Microservicio 1: ms-track-map (Cartografía GPS y Proyección SVG)
+ */
+export const fetchTrackMapFromMs = async (
+    apiBaseUrl: string = API_NODES[0].baseUrl
+): Promise<MicroserviceResponse<any>> => {
+    return fetchMicroserviceIsolated('ms-track-map', '/map', apiBaseUrl, 3500);
+};
+
+/**
+ * Microservicio 2: ms-car-setup (Ingeniería Mecánica y Parámetros de Setup)
+ */
+export const fetchCarSetupFromMs = async (
+    apiBaseUrl: string = API_NODES[0].baseUrl,
+    searchQuery: string = ''
+): Promise<MicroserviceResponse<any>> => {
+    const qs = searchQuery ? `?search=${encodeURIComponent(searchQuery)}` : '';
+    return fetchMicroserviceIsolated('ms-car-setup', `/setup${qs}`, apiBaseUrl, 3500);
+};
+
+/**
+ * Microservicio 3: ms-session-catalog (Catálogo de Sesiones .duckdb y Metadatos)
+ */
+export const fetchSessionMetadataFromMs = async (
+    apiBaseUrl: string = API_NODES[0].baseUrl
+): Promise<MicroserviceResponse<any>> => {
+    return fetchMicroserviceIsolated('ms-session-catalog', '/metadata', apiBaseUrl, 3500);
+};
+
+/**
+ * Estado global y control de fallos de los 5 Microservicios Atómicos
+ */
+export const fetchMicroservicesStatus = async (
+    apiBaseUrl: string = API_NODES[0].baseUrl
+) => {
+    const res = await fetchWithFailover('/microservices/status', apiBaseUrl, 3000);
+    return res ? res.data : null;
+};
+
+export const toggleMicroserviceState = async (
+    msId: string,
+    enabled?: boolean,
+    apiBaseUrl: string = API_NODES[0].baseUrl
+) => {
+    const qs = typeof enabled === 'boolean' ? `?enabled=${enabled}` : '';
+    const res = await fetchWithFailover(
+        `/microservices/${encodeURIComponent(msId)}/toggle${qs}`,
+        apiBaseUrl,
+        3000,
+        { method: 'POST' }
+    );
+    return res ? res.data : null;
+};
+
 /**
  * Carga el paquete vectorizado de la sesión:
  * 1. Primero carga instantáneamente desde el paquete local/Service Worker (/data/sebring_session_pack.json)
@@ -245,14 +374,19 @@ export const loadInitialSessionPackFast = async (
             return { ...packData, _source: 'sw_local_edge' };
         }
     } catch {
-        // Si no existe localmente, consultamos al servidor remoto
+        // Si no existe localmente, consultamos al microservicio remoto
     }
 
-    // 2. Consulta al servidor remoto a 20 Hz
+    // 2. Consulta al microservicio ms-telemetry-pack a 20 Hz
     const params = new URLSearchParams({ step_hz: '20', data_node: dataNode });
-    const remoteRes = await fetchWithFailover(`/session-pack?${params.toString()}`, preferredBaseUrl, 8000);
-    if (remoteRes?.data) {
-        return { ...remoteRes.data, _source: 'remote_server' };
+    const msRes = await fetchMicroserviceIsolated(
+        'ms-telemetry-pack',
+        `/pack?${params.toString()}`,
+        preferredBaseUrl,
+        8000
+    );
+    if (msRes.ok && msRes.data) {
+        return { ...msRes.data, _source: 'remote_server' };
     }
 
     return null;
@@ -267,8 +401,13 @@ export const fetchRemoteSessionPack = async (
     if (sessionName) {
         params.set('session', sessionName);
     }
-    const res = await fetchWithFailover(`/session-pack?${params.toString()}`, preferredBaseUrl, 10000);
-    return res ? res.data : null;
+    const msRes = await fetchMicroserviceIsolated(
+        'ms-telemetry-pack',
+        `/pack?${params.toString()}`,
+        preferredBaseUrl,
+        10000
+    );
+    return msRes.ok ? msRes.data : null;
 };
 
 export const registerSessionPackOnServer = async (
@@ -276,15 +415,21 @@ export const registerSessionPackOnServer = async (
     packPayload: any,
     apiBaseUrl: string = API_NODES[0].baseUrl
 ) => {
-    const res = await fetchWithFailover(`/sessions/register-pack`, apiBaseUrl, 8000, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-            filename,
-            pack_payload: packPayload,
-        }),
-    });
-    return res ? res.data : null;
+    const msRes = await fetchMicroserviceIsolated(
+        'ms-session-catalog',
+        '/register-pack',
+        apiBaseUrl,
+        8000,
+        {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                filename,
+                pack_payload: packPayload,
+            }),
+        }
+    );
+    return msRes.ok ? msRes.data : null;
 };
 
 export const uploadRawDuckdbFileToServer = async (
@@ -292,17 +437,24 @@ export const uploadRawDuckdbFileToServer = async (
     apiBaseUrl: string = API_NODES[0].baseUrl
 ) => {
     const params = new URLSearchParams({ filename: file.name });
-    const res = await fetchWithFailover(`/sessions/upload?${params.toString()}`, apiBaseUrl, 25000, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/octet-stream' },
-        body: file,
-    });
-    return res ? res.data : null;
+    const msRes = await fetchMicroserviceIsolated(
+        'ms-session-catalog',
+        `/upload?${params.toString()}`,
+        apiBaseUrl,
+        25000,
+        {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/octet-stream' },
+            body: file,
+        }
+    );
+    return msRes.ok ? msRes.data : null;
 };
 
 /**
- * Sincronización ultraligera con el servidor en Render (~150 bytes, 0% uso de DuckDB).
- * Si Render sigue despertando (cold start), devuelve null sin afectar el procesamiento en el cliente.
+ * Sincronización ultraligera con el microservicio ms-room-sync (~150 bytes, 0% uso de DuckDB).
+ * Si ms-room-sync cae (503) o Render sigue despertando, devuelve { __ms_offline: true } o null
+ * sin afectar el procesamiento de telemetría a 20 Hz en el cliente.
  */
 export const syncClientStateWithServer = async (
     apiBaseUrl: string,
@@ -324,10 +476,17 @@ export const syncClientStateWithServer = async (
         duration_s: Number(resolvedDuration || 649.5).toFixed(2),
         data_node: resolvedDataNode,
     });
-    const res = await fetchWithFailover(`/sync-state?${params.toString()}`, apiBaseUrl, 2200, {
-        method: 'POST',
-    });
-    return res ? res.data : null;
+    const msRes = await fetchMicroserviceIsolated(
+        'ms-room-sync',
+        `/state?${params.toString()}`,
+        apiBaseUrl,
+        2200,
+        { method: 'POST' }
+    );
+    if (msRes.status === 503) {
+        return { __ms_offline: true, ms_id: 'ms-room-sync', error: msRes.error };
+    }
+    return msRes.ok ? msRes.data : null;
 };
 
 export const fetchClusterStatus = async (apiBaseUrl: string = API_NODES[0].baseUrl) => {
@@ -341,21 +500,26 @@ export const resetPlayback = async (
     mode: 'sync' | 'independent' = 'sync'
 ) => {
     const params = new URLSearchParams({ client_id: clientId, mode });
-    const res = await fetchWithFailover(`/playback/reset?${params.toString()}`, apiBaseUrl, 2500, {
-        method: 'POST',
-    });
-    return res ? res.data : null;
+    const msRes = await fetchMicroserviceIsolated(
+        'ms-room-sync',
+        `/reset?${params.toString()}`,
+        apiBaseUrl,
+        2500,
+        { method: 'POST' }
+    );
+    return msRes.ok ? msRes.data : null;
 };
 
 export const switchSession = async (
     filename: string,
     apiBaseUrl: string = API_NODES[0].baseUrl
 ) => {
-    const res = await fetchWithFailover(
-        `/sessions/${encodeURIComponent(filename)}`,
+    const msRes = await fetchMicroserviceIsolated(
+        'ms-session-catalog',
+        `/switch/${encodeURIComponent(filename)}`,
         apiBaseUrl,
         4000,
         { method: 'POST' }
     );
-    return res ? res.data : null;
+    return msRes.ok ? msRes.data : null;
 };

@@ -14,6 +14,7 @@ from database.connection import (
     list_available_sessions,
 )
 from repositories.telemetry_repository import TelemetryRepository
+from microservices.registry import is_service_enabled
 from models.schemas import (
     SessionMetadata,
     SetupEntry,
@@ -194,8 +195,16 @@ class TelemetryService:
             "active_session_file": get_active_db_path().name,
             "available_sessions": list_available_sessions(),
             "session": _LOCAL_META_CACHE[active_db_path].model_dump(),
-            "setup": {k: v.model_dump() for k, v in _LOCAL_SETUP_CACHE[active_db_path].items()},
-            "track_map": [p.model_dump() for p in _LOCAL_MAP_CACHE[active_db_path]],
+            "setup": (
+                {k: v.model_dump() for k, v in _LOCAL_SETUP_CACHE[active_db_path].items()}
+                if is_service_enabled("ms-car-setup")
+                else {}
+            ),
+            "track_map": (
+                [p.model_dump() for p in _LOCAL_MAP_CACHE[active_db_path]]
+                if is_service_enabled("ms-track-map")
+                else []
+            ),
             "telemetry_pack": pack,
         }
 
@@ -212,7 +221,10 @@ class TelemetryService:
 
         session_dict = pack_payload.get("session") or {}
         if not session_dict.get("car_brand"):
-            session_dict["car_brand"] = self._infer_car_brand(session_dict.get("car_name", "Unknown"))
+            session_dict["car_brand"] = detect_car_brand(
+                session_dict.get("car_name", "Unknown"),
+                session_dict.get("car_class", ""),
+            )
         _LOCAL_META_CACHE[target_path_str] = SessionMetadata(**session_dict)
 
         raw_setup = pack_payload.get("setup") or {}

@@ -9,6 +9,14 @@ from fastapi.middleware.gzip import GZipMiddleware
 from database.connection import NodeIdentityMiddleware
 from middleware.error_handler import TelemetryErrorMiddleware
 from routes import telemetry_routes, data_node_routes
+from microservices import (
+    track_map_ms,
+    car_setup_ms,
+    session_catalog_ms,
+    telemetry_pack_ms,
+    room_sync_ms,
+)
+from microservices.registry import get_all_microservices_status
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 FRONTEND_DIST = BASE_DIR / "frontend" / "paddock-dashboard" / "dist"
@@ -54,10 +62,21 @@ app.mount("/data2", NodeIdentityMiddleware(data2_app, "data-node-2"))
 app.include_router(telemetry_routes.router, prefix="/api/v1")
 app.include_router(data_node_routes.router, prefix="/data/v1")
 
+# Montaje directo de los 5 Microservicios Atómicos bajo /ms/*
+app.include_router(track_map_ms.router, prefix="/ms/track-map")
+app.include_router(car_setup_ms.router, prefix="/ms/car-setup")
+app.include_router(session_catalog_ms.router, prefix="/ms/session-catalog")
+app.include_router(telemetry_pack_ms.router, prefix="/ms/telemetry-pack")
+app.include_router(room_sync_ms.router, prefix="/ms/room-sync")
+
 
 @app.get("/health")
 def root_health():
-    return {"status": "ok", "mode": "lightweight_cloud_cluster"}
+    return {
+        "status": "ok",
+        "mode": "lightweight_cloud_cluster_with_microservices",
+        "microservices": get_all_microservices_status(),
+    }
 
 
 # Si existe el build estático de Astro, también lo servimos como respaldo
