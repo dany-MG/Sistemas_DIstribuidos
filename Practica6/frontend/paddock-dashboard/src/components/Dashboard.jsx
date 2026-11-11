@@ -670,7 +670,6 @@ export default function Dashboard() {
             indCursorRef.current = 15.0;
             setTelemetryHistory([]);
             applyPackPayload(localPackPayload, playbackMode);
-            setMsRefreshToken((n) => n + 1);
 
             if (broadcastChannelRef.current) {
                 try {
@@ -684,6 +683,7 @@ export default function Dashboard() {
 
             setDuckdbUploadStatus('Sincronizando sesión con el microservicio ms-session-catalog...');
             await registerSessionPackOnServer(file.name, localPackPayload, selectedApiNodeUrl);
+            setMsRefreshToken((n) => n + 1);
             setDuckdbUploadStatus('');
         } catch (wasmErr) {
             console.warn('Fallback a subida directa al microservicio ms-session-catalog:', wasmErr);

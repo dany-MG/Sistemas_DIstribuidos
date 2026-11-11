@@ -1,10 +1,13 @@
 import os
 import json
+import tempfile
 import time
+from pathlib import Path
 from typing import Dict, List, Optional
 from database.connection import (
     get_node_id,
     DATA_DIR,
+    DEFAULT_DB_NAME,
     DEFAULT_API_NODES,
     DEFAULT_DATA_NODES,
     state_store,
@@ -99,9 +102,86 @@ class TelemetryService:
         self.state = state_store
         self.last_data_node_id = "data-node-1"
 
+    def _get_custom_pack_cache_file(self, filename: str) -> Path:
+        safe_name = os.path.basename(filename.strip())
+        return Path(tempfile.gettempdir()) / f"lmu_custom_pack_{safe_name}.json"
+
+    def _hydrate_from_shared_custom_pack(self, db_path: Path) -> bool:
+        target_str = str(db_path)
+        if target_str in _LOCAL_MAP_CACHE and f"{target_str}:20" in _LOCAL_PACK_CACHE:
+            return True
+        shared_file = self._get_custom_pack_cache_file(db_path.name)
+        if not shared_file.exists():
+            return False
+        try:
+            payload = json.loads(shared_file.read_text(encoding="utf-8"))
+            self._populate_caches_from_pack_payload(target_str, payload)
+            return True
+        except Exception:
+            return False
+
+    def _populate_caches_from_pack_payload(self, target_path_str: str, pack_payload: dict) -> None:
+        session_dict = pack_payload.get("session") or {}
+        if not session_dict.get("car_brand"):
+            session_dict["car_brand"] = detect_car_brand(
+                session_dict.get("car_name", "Unknown"),
+                session_dict.get("car_class", ""),
+            )
+        _LOCAL_META_CACHE[target_path_str] = SessionMetadata(**session_dict)
+
+        raw_setup = pack_payload.get("setup") or {}
+        parsed_setup: Dict[str, SetupEntry] = {}
+        for k, v in raw_setup.items():
+            if isinstance(v, dict):
+                parsed_setup[k] = SetupEntry(
+                    key=v.get("key", k),
+                    caption=v.get("caption"),
+                    value=v.get("value"),
+                    string_value=v.get("string_value"),
+                    last_saved=v.get("last_saved"),
+                    min_value=v.get("min_value"),
+                    max_value=v.get("max_value"),
+                    available=bool(v.get("available", True)),
+                    is_free_setting=bool(v.get("is_free_setting", True)),
+                )
+        _LOCAL_SETUP_CACHE[target_path_str] = parsed_setup
+
+        raw_map = pack_payload.get("track_map") or []
+        parsed_map = [
+            GPSPoint(lat=float(p["lat"]), lon=float(p["lon"]))
+            for p in raw_map
+            if isinstance(p, dict)
+            and "lat" in p
+            and "lon" in p
+            and (abs(float(p["lat"])) > 0.001 or abs(float(p["lon"])) > 0.001)
+        ]
+
+        telemetry_pack = pack_payload.get("telemetry_pack") or {}
+        if not parsed_map:
+            cont = telemetry_pack.get("continuous") or {}
+            lats = cont.get("gps_lat") or []
+            lons = cont.get("gps_lon") or []
+            pair_len = min(len(lats), len(lons))
+            step = max(1, pair_len // 1500)
+            for idx in range(0, pair_len, step):
+                lat_v = float(lats[idx] or 0.0)
+                lon_v = float(lons[idx] or 0.0)
+                if abs(lat_v) > 0.001 and abs(lon_v) > 0.001:
+                    parsed_map.append(GPSPoint(lat=lat_v, lon=lon_v))
+
+        _LOCAL_MAP_CACHE[target_path_str] = parsed_map
+
+        pack_hz = int(telemetry_pack.get("step_hz", 20))
+        _LOCAL_PACK_CACHE[f"{target_path_str}:{pack_hz}"] = telemetry_pack
+        _LOCAL_PACK_CACHE[f"{target_path_str}:20"] = telemetry_pack
+        _LOCAL_PACK_CACHE[f"{target_path_str}:5"] = telemetry_pack
+
     def _get_fallback_repo(self) -> TelemetryRepository:
         if self._repo is None:
-            self._repo = TelemetryRepository(db_path=str(get_active_db_path()))
+            active_path = get_active_db_path()
+            if not active_path.exists():
+                active_path = DATA_DIR / DEFAULT_DB_NAME
+            self._repo = TelemetryRepository(db_path=str(active_path))
         return self._repo
 
     def close(self):
@@ -110,24 +190,41 @@ class TelemetryService:
             self._repo = None
 
     def get_session_info(self) -> SessionMetadata:
+        active_db = get_active_db_path()
+        active_db_str = str(active_db)
+        self._hydrate_from_shared_custom_pack(active_db)
+        if active_db_str in _LOCAL_META_CACHE:
+            return _LOCAL_META_CACHE[active_db_str]
+
         remote_payload, node_id = fetch_from_data_nodes("/data/v1/metadata")
         if remote_payload and "metadata" in remote_payload:
             self.last_data_node_id = node_id
             raw_metadata = remote_payload["metadata"]
-        else:
+        elif active_db.exists():
             raw_metadata = self._get_fallback_repo().get_session_metadata()
+        else:
+            raw_metadata = {"TrackName": active_db.stem, "DriverName": "Piloto LMU", "CarName": "LMU Vehicle"}
 
         meta = SessionMetadata(**raw_metadata)
         meta.car_brand = detect_car_brand(meta.car_name, meta.car_class)
+        _LOCAL_META_CACHE[active_db_str] = meta
         return meta
 
     def get_car_setup(self) -> Dict[str, SetupEntry]:
+        active_db = get_active_db_path()
+        active_db_str = str(active_db)
+        self._hydrate_from_shared_custom_pack(active_db)
+        if active_db_str in _LOCAL_SETUP_CACHE:
+            return _LOCAL_SETUP_CACHE[active_db_str]
+
         remote_payload, node_id = fetch_from_data_nodes("/data/v1/setup")
         if remote_payload and "setup_json" in remote_payload:
             self.last_data_node_id = node_id
             raw_setup_str = remote_payload["setup_json"]
-        else:
+        elif active_db.exists():
             raw_setup_str = self._get_fallback_repo().get_car_setup()
+        else:
+            return {}
 
         try:
             raw_setup_dict = json.loads(raw_setup_str)
@@ -138,17 +235,30 @@ class TelemetryService:
         for key, val in raw_setup_dict.items():
             if isinstance(val, dict) and "key" in val:
                 setup_models[key] = SetupEntry(**val)
+        _LOCAL_SETUP_CACHE[active_db_str] = setup_models
         return setup_models
 
     def get_track_map(self) -> List[GPSPoint]:
         """Devuelve la lista de coordenadas para dibujar el circuito en el frontend."""
+        active_db = get_active_db_path()
+        active_db_str = str(active_db)
+        self._hydrate_from_shared_custom_pack(active_db)
+        if active_db_str in _LOCAL_MAP_CACHE and len(_LOCAL_MAP_CACHE[active_db_str]) > 0:
+            return _LOCAL_MAP_CACHE[active_db_str]
+
         remote_payload, node_id = fetch_from_data_nodes("/data/v1/track-map", params={"step": 5})
         if remote_payload and "coordinates" in remote_payload:
             self.last_data_node_id = node_id
             coords = remote_payload["coordinates"]
-        else:
+        elif active_db.exists():
             coords = self._get_fallback_repo().get_track_map_coordinates(step=5)
-        return [GPSPoint(lat=float(lat), lon=float(lon)) for lat, lon in coords]
+        else:
+            coords = []
+
+        points = [GPSPoint(lat=float(lat), lon=float(lon)) for lat, lon in coords]
+        if points:
+            _LOCAL_MAP_CACHE[active_db_str] = points
+        return points
 
     def get_full_session_pack(
         self,
@@ -159,7 +269,9 @@ class TelemetryService:
         Obtiene (o recupera de caché en RAM) el paquete completo de la sesión para que el
         navegador del cliente y su Service Worker calculen toda la telemetría localmente.
         """
-        active_db_path = str(get_active_db_path())
+        active_db = get_active_db_path()
+        active_db_path = str(active_db)
+        self._hydrate_from_shared_custom_pack(active_db)
         cache_key = f"{active_db_path}:{step_hz}"
 
         if cache_key not in _LOCAL_PACK_CACHE:
@@ -218,44 +330,13 @@ class TelemetryService:
             clean_name = f"{clean_name}.duckdb"
 
         target_path_str = str(DATA_DIR / clean_name)
+        self._populate_caches_from_pack_payload(target_path_str, pack_payload)
 
-        session_dict = pack_payload.get("session") or {}
-        if not session_dict.get("car_brand"):
-            session_dict["car_brand"] = detect_car_brand(
-                session_dict.get("car_name", "Unknown"),
-                session_dict.get("car_class", ""),
-            )
-        _LOCAL_META_CACHE[target_path_str] = SessionMetadata(**session_dict)
-
-        raw_setup = pack_payload.get("setup") or {}
-        parsed_setup: Dict[str, SetupEntry] = {}
-        for k, v in raw_setup.items():
-            if isinstance(v, dict):
-                parsed_setup[k] = SetupEntry(
-                    key=v.get("key", k),
-                    caption=v.get("caption"),
-                    value=v.get("value"),
-                    string_value=v.get("string_value"),
-                    last_saved=v.get("last_saved"),
-                    min_value=v.get("min_value"),
-                    max_value=v.get("max_value"),
-                    available=bool(v.get("available", True)),
-                    is_free_setting=bool(v.get("is_free_setting", True)),
-                )
-        _LOCAL_SETUP_CACHE[target_path_str] = parsed_setup
-
-        raw_map = pack_payload.get("track_map") or []
-        _LOCAL_MAP_CACHE[target_path_str] = [
-            GPSPoint(lat=float(p["lat"]), lon=float(p["lon"]))
-            for p in raw_map
-            if isinstance(p, dict) and "lat" in p and "lon" in p
-        ]
-
-        telemetry_pack = pack_payload.get("telemetry_pack") or {}
-        pack_hz = int(telemetry_pack.get("step_hz", 20))
-        _LOCAL_PACK_CACHE[f"{target_path_str}:{pack_hz}"] = telemetry_pack
-        _LOCAL_PACK_CACHE[f"{target_path_str}:20"] = telemetry_pack
-        _LOCAL_PACK_CACHE[f"{target_path_str}:5"] = telemetry_pack
+        try:
+            shared_file = self._get_custom_pack_cache_file(clean_name)
+            shared_file.write_text(json.dumps(pack_payload), encoding="utf-8")
+        except Exception:
+            pass
 
         self.state.register_custom_session_name(clean_name, activate=True)
 

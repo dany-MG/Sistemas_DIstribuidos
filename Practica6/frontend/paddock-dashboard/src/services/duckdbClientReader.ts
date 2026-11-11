@@ -369,6 +369,23 @@ export async function parseDuckdbFileInBrowser(
             );
             const durationSec = Number((totalTicks / stepHz).toFixed(2));
 
+            if (trackMap.length === 0) {
+                const lats = continuousData.gps_lat || [];
+                const lons = continuousData.gps_lon || [];
+                const pairLen = Math.min(lats.length, lons.length);
+                const mapStep = Math.max(1, Math.floor(pairLen / 1500));
+                for (let i = 0; i < pairLen; i += mapStep) {
+                    const latVal = Number(lats[i] || 0);
+                    const lonVal = Number(lons[i] || 0);
+                    if (Math.abs(latVal) > 0.01 && Math.abs(lonVal) > 0.01) {
+                        trackMap.push({
+                            lat: Number(latVal.toFixed(6)),
+                            lon: Number(lonVal.toFixed(6)),
+                        });
+                    }
+                }
+            }
+
             return {
                 api_node_id: 'duckdb-wasm-client',
                 data_node_id: 'local-duckdb-wasm',

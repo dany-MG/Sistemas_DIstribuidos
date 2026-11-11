@@ -22,25 +22,14 @@ export default function TrackMapWidget({
     });
 
     const loadTrackGeometry = useCallback(async () => {
-        setMapState((prev) => ({ ...prev, loading: true }));
+        setMapState((prev) => ({
+            ...prev,
+            loading: prev.coordinates.length === 0 && (!fallbackCoords || fallbackCoords.length === 0),
+        }));
         const res = await fetchTrackMapFromMs(apiBaseUrl);
 
-        if (res.ok && res.data) {
-            setMapState({
-                loading: false,
-                offline503: false,
-                errorMsg: null,
-                coordinates: res.data.coordinates || [],
-                svgPoints: res.data.svg_points || '',
-                bounds: res.data.bounds || null,
-                source: 'ms-track-map',
-            });
-            onMicroserviceStatusChange?.('ms-track-map', true);
-            return;
-        }
-
         // Si el microservicio ms-track-map devolvió HTTP 503 (caída simulada o real),
-        // aislamos el fallo en este widget sin usar datos ocultos para demostrar la degradación elegante.
+        // aislamos el fallo en este widget para demostrar el patrón Bulkhead.
         if (res.status === 503) {
             setMapState({
                 loading: false,
@@ -57,7 +46,30 @@ export default function TrackMapWidget({
             return;
         }
 
-        // Si el backend completo está despertando en la nube (timeout de red), usamos las coordenadas del caché Edge
+        if (res.ok && res.data) {
+            const remoteCoords = res.data.coordinates || [];
+            const remoteMatchesActiveSession =
+                !activeSessionFile ||
+                !res.data.active_session_file ||
+                res.data.active_session_file === activeSessionFile;
+
+            if (remoteCoords.length > 0 && remoteMatchesActiveSession) {
+                setMapState({
+                    loading: false,
+                    offline503: false,
+                    errorMsg: null,
+                    coordinates: remoteCoords,
+                    svgPoints: res.data.svg_points || '',
+                    bounds: res.data.bounds || null,
+                    source: 'ms-track-map',
+                });
+                onMicroserviceStatusChange?.('ms-track-map', true);
+                return;
+            }
+        }
+
+        // Si el usuario acaba de abrir un archivo .duckdb con DuckDB-Wasm en el navegador
+        // (o si el servidor remoto aún está sincronizando), usamos la geometría extraída localmente.
         if (fallbackCoords && fallbackCoords.length > 0) {
             setMapState({
                 loading: false,
@@ -66,19 +78,21 @@ export default function TrackMapWidget({
                 coordinates: fallbackCoords,
                 svgPoints: '',
                 bounds: null,
-                source: 'edge-cache-fallback',
+                source: 'wasm-client-fallback',
             });
-        } else {
-            setMapState({
-                loading: false,
-                offline503: true,
-                errorMsg: res.error || 'No se pudo obtener la geometría del circuito.',
-                coordinates: [],
-                svgPoints: '',
-                bounds: null,
-                source: 'error',
-            });
+            onMicroserviceStatusChange?.('ms-track-map', true);
+            return;
         }
+
+        setMapState({
+            loading: false,
+            offline503: false,
+            errorMsg: res.error || null,
+            coordinates: [],
+            svgPoints: '',
+            bounds: null,
+            source: 'empty',
+        });
     }, [apiBaseUrl, activeSessionFile, fallbackCoords, onMicroserviceStatusChange]);
 
     useEffect(() => {
