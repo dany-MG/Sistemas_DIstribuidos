@@ -743,20 +743,20 @@ export default function Dashboard() {
     const totalMsCount = Object.keys(msHealthMap).length;
 
     return (
-        <div className="min-h-screen bg-neutral-950 text-neutral-100 p-6 font-sans">
+        <div className="min-h-screen bg-neutral-950 text-neutral-100 p-2.5 sm:p-4 md:p-6 font-sans overflow-x-hidden">
             {duckdbUploadStatus && (
-                <div className="bg-cyan-500/20 border border-cyan-500 text-cyan-200 p-2.5 mb-4 rounded text-xs font-mono animate-pulse flex justify-between items-center">
+                <div className="bg-cyan-500/20 border border-cyan-500 text-cyan-200 p-2.5 mb-3 sm:mb-4 rounded text-xs font-mono animate-pulse flex flex-col sm:flex-row justify-between items-start sm:items-center gap-1">
                     <span>DUCKDB-WASM CLIENT ENGINE: {duckdbUploadStatus}</span>
-                    <span>ms-session-catalog • 20 Hz</span>
+                    <span className="text-[10px] opacity-80">ms-session-catalog • 20 Hz</span>
                 </div>
             )}
 
             {connectionError && (
-                <div className="bg-amber-500/20 border border-amber-500 text-amber-300 p-2 mb-4 rounded text-xs font-mono animate-pulse flex justify-between items-center">
+                <div className="bg-amber-500/20 border border-amber-500 text-amber-300 p-2.5 mb-3 sm:mb-4 rounded text-xs font-mono animate-pulse flex flex-col sm:flex-row justify-between items-start sm:items-center gap-1">
                     <span>
                         CONMUTACIÓN DE NODO: Reconectando flujo de telemetría con otro servidor activo del clúster...
                     </span>
-                    <span>CLIENT: {clientId}</span>
+                    <span className="text-[10px] opacity-80">CLIENT: {clientId}</span>
                 </div>
             )}
 
@@ -796,39 +796,41 @@ export default function Dashboard() {
             {data && (
                 <>
                     {/* BARRA SUPERIOR DE ARQUITECTURA DISTRIBUIDA Y MICROSERVICIOS */}
-                    <div className="mb-3 bg-neutral-900/90 border border-neutral-800 rounded-lg px-4 py-2.5 flex flex-wrap justify-between items-center gap-3 text-xs font-mono">
-                        <div className="flex flex-wrap items-center gap-3">
-                            <span className="px-2 py-1 rounded bg-blue-500/10 border border-blue-500/30 text-blue-300 font-bold">
-                                CLIENTE: {clientId}
-                            </span>
+                    <div className="mb-3 sm:mb-4 bg-neutral-900/90 border border-neutral-800 rounded-lg px-3 py-2.5 sm:px-4 sm:py-2.5 flex flex-col lg:flex-row justify-between items-stretch lg:items-center gap-2.5 sm:gap-3 text-xs font-mono">
+                        <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 sm:gap-3 flex-wrap">
+                            <div className="flex flex-wrap items-center gap-2">
+                                <span className="px-2 py-1 rounded bg-blue-500/10 border border-blue-500/30 text-blue-300 font-bold text-[10px] sm:text-xs">
+                                    CLIENTE: {clientId}
+                                </span>
 
-                            <span className="px-2 py-1 rounded bg-emerald-500/10 border border-emerald-500/30 text-emerald-300">
-                                CLIENTES EN SALA:{' '}
-                                <strong>{Math.max(activeClientsCount, tel.active_clients_count || 1)}</strong>
-                            </span>
+                                <span className="px-2 py-1 rounded bg-emerald-500/10 border border-emerald-500/30 text-emerald-300 text-[10px] sm:text-xs">
+                                    CLIENTES EN SALA:{' '}
+                                    <strong>{Math.max(activeClientsCount, tel.active_clients_count || 1)}</strong>
+                                </span>
 
-                            <span
-                                className={`px-2 py-1 rounded border text-[10px] font-bold ${
-                                    msHealthMap['ms-room-sync'] === false
-                                        ? 'bg-red-500/15 border-red-500/40 text-red-300'
+                                <span
+                                    className={`px-2 py-1 rounded border text-[10px] font-bold ${
+                                        msHealthMap['ms-room-sync'] === false
+                                            ? 'bg-red-500/15 border-red-500/40 text-red-300'
+                                            : backendOnline
+                                            ? 'bg-cyan-500/10 border-cyan-500/30 text-cyan-300'
+                                            : 'bg-amber-500/10 border-amber-500/30 text-amber-300'
+                                    }`}
+                                    title="Estado del microservicio ms-room-sync y el motor local a 20 Hz"
+                                >
+                                    {msHealthMap['ms-room-sync'] === false
+                                        ? 'ms-room-sync OFFLINE (FALLBACK LOCAL ACTIVO)'
                                         : backendOnline
-                                        ? 'bg-cyan-500/10 border-cyan-500/30 text-cyan-300'
-                                        : 'bg-amber-500/10 border-amber-500/30 text-amber-300'
-                                }`}
-                                title="Estado del microservicio ms-room-sync y el motor local a 20 Hz"
-                            >
-                                {msHealthMap['ms-room-sync'] === false
-                                    ? 'ms-room-sync OFFLINE (FALLBACK LOCAL ACTIVO)'
-                                    : backendOnline
-                                    ? '20Hz SW + MICROSERVICES ONLINE'
-                                    : '20Hz SW EDGE (LOCAL MESH)'}
-                            </span>
+                                        ? '20Hz SW + MICROSERVICES ONLINE'
+                                        : '20Hz SW EDGE (LOCAL MESH)'}
+                                </span>
+                            </div>
 
                             {/* Switch Sincronizado vs Independiente */}
-                            <div className="inline-flex rounded border border-neutral-700 bg-neutral-950 p-0.5">
+                            <div className="grid grid-cols-2 sm:inline-flex rounded border border-neutral-700 bg-neutral-950 p-0.5 w-full sm:w-auto">
                                 <button
                                     onClick={() => handleToggleMode('sync')}
-                                    className={`px-2.5 py-1 rounded text-[10px] font-bold transition cursor-pointer ${
+                                    className={`px-2.5 py-1.5 sm:py-1 rounded text-[10px] font-bold transition cursor-pointer text-center ${
                                         playbackMode === 'sync'
                                             ? 'bg-emerald-500/25 text-emerald-300 border border-emerald-500/40'
                                             : 'text-neutral-400 hover:text-neutral-200'
@@ -839,7 +841,7 @@ export default function Dashboard() {
                                 </button>
                                 <button
                                     onClick={() => handleToggleMode('independent')}
-                                    className={`px-2.5 py-1 rounded text-[10px] font-bold transition cursor-pointer ${
+                                    className={`px-2.5 py-1.5 sm:py-1 rounded text-[10px] font-bold transition cursor-pointer text-center ${
                                         playbackMode === 'independent'
                                             ? 'bg-purple-500/25 text-purple-300 border border-purple-500/40'
                                             : 'text-neutral-400 hover:text-neutral-200'
@@ -851,13 +853,13 @@ export default function Dashboard() {
                             </div>
 
                             {/* Control de Línea de Tiempo y Comparador de Relojes (Sala vs Cliente) */}
-                            <div className="flex items-center gap-2 bg-neutral-950 border border-neutral-800 rounded px-2.5 py-1">
+                            <div className="flex flex-wrap items-center justify-between sm:justify-start gap-2 bg-neutral-950 border border-neutral-800 rounded px-2.5 py-1.5 sm:py-1 w-full sm:w-auto">
                                 <span className="text-[10px] text-neutral-400">
                                     SALA: <strong className="text-emerald-400">T+{roomSyncTimeDisplay.toFixed(1)}s</strong>
                                 </span>
                                 {playbackMode === 'independent' && (
                                     <>
-                                        <span className="text-neutral-600">|</span>
+                                        <span className="text-neutral-600 hidden sm:inline">|</span>
                                         <span className="text-[10px] text-purple-300">
                                             MÍO: <strong>T+{(tel.session_time_s ?? 15.0).toFixed(1)}s</strong>
                                         </span>
@@ -868,7 +870,7 @@ export default function Dashboard() {
                                             step="0.5"
                                             value={tel.session_time_s ?? 15}
                                             onChange={(e) => handleScrubIndependentTime(e.target.value)}
-                                            className="w-24 accent-purple-500 cursor-pointer"
+                                            className="w-full sm:w-24 accent-purple-500 cursor-pointer h-1.5"
                                             title="Desplazar libremente mi línea de tiempo independiente sin afectar a la sala"
                                         />
                                     </>
@@ -877,13 +879,13 @@ export default function Dashboard() {
                         </div>
 
                         {/* Selectores de Múltiples Servidores + Panel de Microservicios */}
-                        <div className="flex flex-wrap items-center gap-3">
-                            <div className="flex items-center gap-1.5">
-                                <span className="text-[10px] text-neutral-500 uppercase">API Server:</span>
+                        <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-2 sm:gap-3 flex-wrap">
+                            <div className="flex items-center justify-between sm:justify-start gap-2 bg-neutral-950 sm:bg-transparent px-2.5 py-1.5 sm:p-0 rounded border border-neutral-800 sm:border-0 w-full sm:w-auto">
+                                <span className="text-[10px] text-neutral-500 uppercase shrink-0">API Server:</span>
                                 <select
                                     value={selectedApiNodeUrl}
                                     onChange={(e) => setSelectedApiNodeUrl(e.target.value)}
-                                    className="bg-neutral-950 border border-neutral-700 rounded px-2 py-1 text-[11px] text-blue-300 font-semibold"
+                                    className="bg-neutral-950 border border-neutral-700 rounded px-2 py-1 text-[11px] text-blue-300 font-semibold min-w-0 flex-1 sm:flex-initial truncate max-w-[200px] sm:max-w-none"
                                 >
                                     {apiNodes.map((node) => (
                                         <option key={node.id} value={node.baseUrl}>
@@ -893,12 +895,12 @@ export default function Dashboard() {
                                 </select>
                             </div>
 
-                            <div className="flex items-center gap-1.5">
-                                <span className="text-[10px] text-neutral-500 uppercase">DuckDB Node:</span>
+                            <div className="flex items-center justify-between sm:justify-start gap-2 bg-neutral-950 sm:bg-transparent px-2.5 py-1.5 sm:p-0 rounded border border-neutral-800 sm:border-0 w-full sm:w-auto">
+                                <span className="text-[10px] text-neutral-500 uppercase shrink-0">DuckDB Node:</span>
                                 <select
                                     value={selectedDataNode}
                                     onChange={(e) => setSelectedDataNode(e.target.value)}
-                                    className="bg-neutral-950 border border-neutral-700 rounded px-2 py-1 text-[11px] text-cyan-300 font-semibold"
+                                    className="bg-neutral-950 border border-neutral-700 rounded px-2 py-1 text-[11px] text-cyan-300 font-semibold min-w-0 flex-1 sm:flex-initial truncate max-w-[200px] sm:max-w-none"
                                 >
                                     {DATA_NODES.map((node) => (
                                         <option key={node.id} value={node.id}>
@@ -908,35 +910,37 @@ export default function Dashboard() {
                                 </select>
                             </div>
 
-                            <button
-                                onClick={() => setShowMicroservicesModal(true)}
-                                className={`px-2.5 py-1 rounded text-[10px] font-bold border transition cursor-pointer ${
-                                    activeMsCount < totalMsCount
-                                        ? 'bg-red-500/20 hover:bg-red-500/30 text-red-300 border-red-500/40 animate-pulse'
-                                        : 'bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-300 border-emerald-500/30'
-                                }`}
-                                title="Inspeccionar y simular caídas individuales en los 5 Microservicios Atómicos"
-                            >
-                                MICROSERVICIOS ({activeMsCount}/{totalMsCount})
-                            </button>
+                            <div className="grid grid-cols-2 sm:flex items-center gap-2 w-full sm:w-auto">
+                                <button
+                                    onClick={() => setShowMicroservicesModal(true)}
+                                    className={`px-2.5 py-1.5 sm:py-1 rounded text-[10px] font-bold border transition cursor-pointer text-center ${
+                                        activeMsCount < totalMsCount
+                                            ? 'bg-red-500/20 hover:bg-red-500/30 text-red-300 border-red-500/40 animate-pulse'
+                                            : 'bg-emerald-500/15 hover:bg-emerald-500/25 text-emerald-300 border-emerald-500/30'
+                                    }`}
+                                    title="Inspeccionar y simular caídas individuales en los 5 Microservicios Atómicos"
+                                >
+                                    MICROSERVICIOS ({activeMsCount}/{totalMsCount})
+                                </button>
 
-                            <button
-                                onClick={() => {
-                                    handleRefreshCluster();
-                                    setShowClusterModal(true);
-                                }}
-                                className="px-2.5 py-1 rounded text-[10px] font-bold bg-purple-500/15 hover:bg-purple-500/25 text-purple-300 border border-purple-500/30 transition cursor-pointer"
-                            >
-                                TOPOLOGÍA MC-MS
-                            </button>
+                                <button
+                                    onClick={() => {
+                                        handleRefreshCluster();
+                                        setShowClusterModal(true);
+                                    }}
+                                    className="px-2.5 py-1.5 sm:py-1 rounded text-[10px] font-bold bg-purple-500/15 hover:bg-purple-500/25 text-purple-300 border border-purple-500/30 transition cursor-pointer text-center"
+                                >
+                                    TOPOLOGÍA MC-MS
+                                </button>
+                            </div>
                         </div>
                     </div>
 
                     {/* CABECERA CON INFORMACIÓN DE SESIÓN MULTIMEDIA Y CATÁLOGO .DUCKDB (ms-session-catalog) */}
                     <ErrorBoundary serviceName="ms-session-catalog Header">
-                        <header className="mb-6 bg-neutral-900 border border-neutral-800 rounded-lg p-5 flex flex-col xl:flex-row justify-between items-center gap-6 shadow-md">
-                            <div className="flex items-center gap-6 w-full xl:w-auto">
-                                <div className="w-44 h-20 bg-neutral-950 rounded-lg border border-neutral-800 flex items-center justify-center overflow-hidden shrink-0 p-1 shadow-inner">
+                        <header className="mb-4 sm:mb-6 bg-neutral-900 border border-neutral-800 rounded-lg p-3.5 sm:p-5 flex flex-col xl:flex-row justify-between items-start xl:items-center gap-4 sm:gap-6 shadow-md">
+                            <div className="flex flex-col sm:flex-row items-start sm:items-center gap-3.5 sm:gap-6 w-full xl:w-auto">
+                                <div className="w-full sm:w-44 h-24 sm:h-20 bg-neutral-950 rounded-lg border border-neutral-800 flex items-center justify-center overflow-hidden shrink-0 p-1 shadow-inner">
                                     <img
                                         src={carBrandImageUrl}
                                         alt={data.session.car_brand || data.session.car_name}
@@ -947,8 +951,8 @@ export default function Dashboard() {
                                     />
                                 </div>
 
-                                <div>
-                                    <div className="flex items-center gap-2 text-[10px] uppercase tracking-[0.2em] text-neutral-500 font-mono mb-1">
+                                <div className="w-full sm:w-auto min-w-0">
+                                    <div className="flex flex-wrap items-center gap-1.5 sm:gap-2 text-[10px] uppercase tracking-[0.15em] sm:tracking-[0.2em] text-neutral-500 font-mono mb-1">
                                         <span>Piloto en Pista</span>
                                         <span>•</span>
                                         <span className="text-amber-400">
@@ -964,12 +968,12 @@ export default function Dashboard() {
                                             </>
                                         )}
                                     </div>
-                                    <h1 className="text-2xl md:text-3xl font-bold tracking-tight text-white uppercase leading-none">
+                                    <h1 className="text-xl sm:text-2xl md:text-3xl font-bold tracking-tight text-white uppercase leading-tight break-words">
                                         {data.session.driver_name ||
                                             data.session.DriverName ||
                                             'PILOTO DESCONOCIDO'}
                                     </h1>
-                                    <div className="flex flex-wrap items-center gap-2 mt-3 text-[10px] font-mono">
+                                    <div className="flex flex-wrap items-center gap-1.5 sm:gap-2 mt-2.5 sm:mt-3 text-[10px] font-mono">
                                         <span className="text-red-400 bg-red-500/10 border border-red-500/30 px-2 py-1 rounded font-bold uppercase">
                                             CATEGORÍA: {carCategory}
                                         </span>
@@ -997,16 +1001,16 @@ export default function Dashboard() {
                                 </div>
                             </div>
 
-                            <div className="flex flex-wrap items-center gap-4 self-start xl:self-center bg-neutral-950 p-3 rounded-lg border border-neutral-800 w-full xl:w-auto justify-between">
-                                <div className="flex items-end gap-2">
-                                    <div className="flex flex-col">
-                                        <span className="text-[9px] text-neutral-500 font-mono uppercase">
+                            <div className="flex flex-col sm:flex-row flex-wrap items-stretch sm:items-center gap-3 sm:gap-4 self-start xl:self-center bg-neutral-950 p-3 rounded-lg border border-neutral-800 w-full xl:w-auto justify-between">
+                                <div className="flex flex-col sm:flex-row items-stretch sm:items-end gap-2 w-full sm:w-auto">
+                                    <div className="flex flex-col flex-1 min-w-0">
+                                        <span className="text-[9px] text-neutral-500 font-mono uppercase mb-0.5 truncate">
                                             Sesión Telemetría (.duckdb) • ms-session-catalog
                                         </span>
                                         <select
                                             value={data.active_session_file || ''}
                                             onChange={handleSessionChange}
-                                            className="bg-neutral-900 border border-neutral-800 rounded px-2 py-1.5 text-[11px] font-mono text-cyan-300 font-semibold max-w-[210px] truncate cursor-pointer"
+                                            className="bg-neutral-900 border border-neutral-800 rounded px-2 py-1.5 text-[11px] font-mono text-cyan-300 font-semibold w-full sm:max-w-[210px] truncate cursor-pointer"
                                             title={data.active_session_file || 'Seleccionar archivo .duckdb'}
                                         >
                                             {(
@@ -1031,17 +1035,17 @@ export default function Dashboard() {
                                     <button
                                         onClick={() => fileInputRef.current?.click()}
                                         disabled={Boolean(duckdbUploadStatus)}
-                                        className="px-2.5 py-1.5 rounded text-[10px] font-mono font-bold bg-cyan-500/15 hover:bg-cyan-500/25 text-cyan-300 border border-cyan-500/40 transition cursor-pointer disabled:opacity-50"
+                                        className="px-2.5 py-2 sm:py-1.5 rounded text-[10px] font-mono font-bold bg-cyan-500/15 hover:bg-cyan-500/25 text-cyan-300 border border-cyan-500/40 transition cursor-pointer disabled:opacity-50 w-full sm:w-auto text-center shrink-0"
                                         title="Seleccionar cualquier archivo .duckdb grabado por Le Mans Ultimate desde tu equipo (procesado con DuckDB-Wasm)"
                                     >
                                         {duckdbUploadStatus ? 'PROCESANDO...' : '+ CARGAR .DUCKDB'}
                                     </button>
                                 </div>
 
-                                <div className="flex items-center gap-2">
+                                <div className="grid grid-cols-3 sm:flex items-center gap-2 w-full sm:w-auto">
                                     <button
                                         onClick={() => setShowSetupModal(true)}
-                                        className={`px-2.5 py-1.5 rounded text-[10px] font-mono font-semibold border transition cursor-pointer ${
+                                        className={`px-2 sm:px-2.5 py-2 sm:py-1.5 rounded text-[10px] font-mono font-semibold border transition cursor-pointer text-center truncate ${
                                             msHealthMap['ms-car-setup'] === false
                                                 ? 'bg-red-500/15 text-red-300 border-red-500/40'
                                                 : 'bg-neutral-900 hover:bg-neutral-800 text-neutral-200 border-neutral-700'
@@ -1049,12 +1053,12 @@ export default function Dashboard() {
                                         title="Consultar microservicio atómico ms-car-setup"
                                     >
                                         {msHealthMap['ms-car-setup'] === false
-                                            ? 'SETUP (OFFLINE 503)'
+                                            ? 'SETUP (503)'
                                             : `SETUP (${Object.keys(data.setup || {}).length})`}
                                     </button>
                                     <button
                                         onClick={() => setIsPaused((p) => !p)}
-                                        className={`px-2.5 py-1.5 rounded text-[10px] font-mono font-semibold border transition cursor-pointer ${
+                                        className={`px-2 sm:px-2.5 py-2 sm:py-1.5 rounded text-[10px] font-mono font-semibold border transition cursor-pointer text-center ${
                                             isPaused
                                                 ? 'bg-amber-500/20 text-amber-300 border-amber-500/40'
                                                 : 'bg-neutral-900 hover:bg-neutral-800 text-neutral-300 border-neutral-700'
@@ -1064,7 +1068,7 @@ export default function Dashboard() {
                                     </button>
                                     <button
                                         onClick={handleResetPlayback}
-                                        className="px-2.5 py-1.5 rounded text-[10px] font-mono font-semibold bg-neutral-900 hover:bg-neutral-800 text-neutral-300 border border-neutral-700 transition cursor-pointer"
+                                        className="px-2 sm:px-2.5 py-2 sm:py-1.5 rounded text-[10px] font-mono font-semibold bg-neutral-900 hover:bg-neutral-800 text-neutral-300 border border-neutral-700 transition cursor-pointer text-center truncate"
                                         title={
                                             playbackMode === 'sync'
                                                 ? 'Reiniciar reloj sincronizado de la sala'
@@ -1075,59 +1079,61 @@ export default function Dashboard() {
                                     </button>
                                 </div>
 
-                                <div className="h-8 w-px bg-neutral-800 hidden md:block"></div>
+                                <div className="h-8 w-px bg-neutral-800 hidden xl:block"></div>
 
-                                <div className="flex items-center gap-3">
-                                    <WeatherWidget
-                                        condition={data.session.weather || data.session.WeatherConditions}
-                                    />
-                                    <div className="flex flex-col justify-center">
-                                        <span className="text-[10px] text-neutral-500 font-mono tracking-wider">
-                                            {data.session.weather || data.session.WeatherConditions || 'Óptimo'}
-                                        </span>
-                                        <div className="flex gap-2 text-xs font-mono text-neutral-300">
-                                            <span>
-                                                PISTA:{' '}
-                                                <strong className="text-amber-400">
-                                                    {(tel.track_temp_c || 0).toFixed(1)}°C
-                                                </strong>
+                                <div className="flex flex-wrap items-center justify-between sm:justify-end gap-3 pt-2.5 sm:pt-0 border-t sm:border-t-0 border-neutral-800 w-full sm:w-auto">
+                                    <div className="flex items-center gap-2.5 sm:gap-3">
+                                        <WeatherWidget
+                                            condition={data.session.weather || data.session.WeatherConditions}
+                                        />
+                                        <div className="flex flex-col justify-center">
+                                            <span className="text-[10px] text-neutral-500 font-mono tracking-wider">
+                                                {data.session.weather || data.session.WeatherConditions || 'Óptimo'}
                                             </span>
-                                            <span>
-                                                AMB:{' '}
-                                                <strong className="text-sky-400">
-                                                    {(tel.ambient_temp_c || 0).toFixed(1)}°C
-                                                </strong>
-                                            </span>
+                                            <div className="flex gap-2 text-xs font-mono text-neutral-300">
+                                                <span>
+                                                    PISTA:{' '}
+                                                    <strong className="text-amber-400">
+                                                        {(tel.track_temp_c || 0).toFixed(1)}°C
+                                                    </strong>
+                                                </span>
+                                                <span>
+                                                    AMB:{' '}
+                                                    <strong className="text-sky-400">
+                                                        {(tel.ambient_temp_c || 0).toFixed(1)}°C
+                                                    </strong>
+                                                </span>
+                                            </div>
                                         </div>
                                     </div>
-                                </div>
 
-                                <div className="h-8 w-px bg-neutral-800 hidden md:block"></div>
+                                    <div className="h-8 w-px bg-neutral-800 hidden md:block"></div>
 
-                                <span
-                                    className={`inline-flex items-center gap-2 py-1.5 px-3 rounded text-[10px] font-mono font-semibold border ${
-                                        isPaused
-                                            ? 'bg-amber-500/10 text-amber-400 border-amber-500/20'
-                                            : 'bg-green-500/10 text-green-400 border-green-500/20'
-                                    }`}
-                                >
                                     <span
-                                        className={`w-1.5 h-1.5 rounded-full ${
-                                            isPaused ? 'bg-amber-400' : 'bg-green-500 animate-ping'
+                                        className={`inline-flex items-center gap-2 py-1.5 px-3 rounded text-[10px] font-mono font-semibold border shrink-0 ${
+                                            isPaused
+                                                ? 'bg-amber-500/10 text-amber-400 border-amber-500/20'
+                                                : 'bg-green-500/10 text-green-400 border-green-500/20'
                                         }`}
-                                    ></span>
-                                    {isPaused ? 'EN PAUSA' : 'TELEMETRÍA ACTIVA'}
-                                </span>
+                                    >
+                                        <span
+                                            className={`w-1.5 h-1.5 rounded-full ${
+                                                isPaused ? 'bg-amber-400' : 'bg-green-500 animate-ping'
+                                            }`}
+                                        ></span>
+                                        {isPaused ? 'EN PAUSA' : 'TELEMETRÍA ACTIVA'}
+                                    </span>
+                                </div>
                             </div>
                         </header>
                     </ErrorBoundary>
 
                     {/* GRID PRINCIPAL DEL MURO DE BOXES (12 Columnas Balanceadas: 3 + 5 + 4 = 12) */}
-                    <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+                    <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 sm:gap-6">
                         {/* PANEL 1: UNIDAD DE POTENCIA, INPUTS, COMBUSTIBLE Y ELECTRÓNICA (3 Columnas) */}
-                        <div className="lg:col-span-3">
+                        <div className="lg:col-span-3 min-w-0">
                             <ErrorBoundary serviceName="Unidad de Potencia (ms-telemetry-pack)">
-                                <div className="bg-neutral-900 rounded-lg p-5 border border-neutral-800 shadow-lg h-full flex flex-col justify-between gap-5">
+                                <div className="bg-neutral-900 rounded-lg p-3.5 sm:p-5 border border-neutral-800 shadow-lg h-full flex flex-col justify-between gap-4 sm:gap-5">
                                     <div>
                                         <div className="flex justify-between items-center border-b border-neutral-800 pb-2">
                                             <h2 className="text-xs uppercase tracking-widest text-neutral-400 font-mono">
@@ -1138,26 +1144,26 @@ export default function Dashboard() {
                                             </span>
                                         </div>
 
-                                        <div className="mt-4 flex justify-between items-end">
-                                            <div>
-                                                <div className="text-5xl font-mono font-bold text-blue-400 tracking-tighter">
+                                        <div className="mt-3 sm:mt-4 flex justify-between items-end gap-2">
+                                            <div className="min-w-0">
+                                                <div className="text-4xl sm:text-5xl font-mono font-bold text-blue-400 tracking-tighter">
                                                     {(tel.speed_kmh || 0).toFixed(0)}
-                                                    <span className="text-base text-neutral-500 ml-1.5 font-normal">
+                                                    <span className="text-sm sm:text-base text-neutral-500 ml-1.5 font-normal">
                                                         km/h
                                                     </span>
                                                 </div>
-                                                <div className="mt-2 text-xl font-mono text-neutral-200">
+                                                <div className="mt-1.5 sm:mt-2 text-lg sm:text-xl font-mono text-neutral-200">
                                                     {(tel.rpm || 0).toFixed(0)}{' '}
                                                     <span className="text-xs text-neutral-500">
                                                         / {maxRpm.toFixed(0)} RPM
                                                     </span>
                                                 </div>
                                             </div>
-                                            <div className="flex flex-col items-end">
+                                            <div className="flex flex-col items-end shrink-0">
                                                 <span className="text-[10px] font-mono uppercase text-neutral-500 mb-1">
                                                     Marcha
                                                 </span>
-                                                <span className="text-3xl font-mono font-bold text-yellow-400 bg-yellow-400/10 px-3.5 py-1.5 rounded border border-yellow-400/20">
+                                                <span className="text-2xl sm:text-3xl font-mono font-bold text-yellow-400 bg-yellow-400/10 px-3 sm:px-3.5 py-1 sm:py-1.5 rounded border border-yellow-400/20">
                                                     {tel.gear === 0 ? 'N' : tel.gear === -1 ? 'R' : tel.gear}
                                                 </span>
                                             </div>
@@ -1320,10 +1326,10 @@ export default function Dashboard() {
                         </div>
 
                         {/* PANEL 2: ANÁLISIS DE TELEMETRÍA (Analysis Channels - 5 Columnas) */}
-                        <div className="lg:col-span-5">
+                        <div className="lg:col-span-5 min-w-0">
                             <ErrorBoundary serviceName="Analysis Channels (ms-telemetry-pack)">
-                                <div className="bg-neutral-900 rounded-lg p-5 border border-neutral-800 shadow-lg h-full flex flex-col">
-                                    <div className="flex justify-between items-center mb-4 border-b border-neutral-800 pb-2">
+                                <div className="bg-neutral-900 rounded-lg p-3.5 sm:p-5 border border-neutral-800 shadow-lg h-full flex flex-col">
+                                    <div className="flex flex-wrap justify-between items-center gap-1.5 mb-3 sm:mb-4 border-b border-neutral-800 pb-2">
                                         <h2 className="text-xs uppercase tracking-widest text-neutral-400 font-mono">
                                             Analysis Channels
                                         </h2>
@@ -1448,7 +1454,7 @@ export default function Dashboard() {
                         </div>
 
                         {/* PANEL 3: MAPA DEL CIRCUITO (ms-track-map) + NEUMÁTICOS Y FRENOS (4 Columnas) */}
-                        <div className="lg:col-span-4 flex flex-col gap-6">
+                        <div className="lg:col-span-4 flex flex-col gap-4 sm:gap-6 min-w-0">
                             {/* SUBPANEL 3A: MICROSERVICIO ATÓMICO DE MAPA GPS (ms-track-map) */}
                             <ErrorBoundary serviceName="ms-track-map Widget">
                                 <TrackMapWidget
@@ -1465,8 +1471,8 @@ export default function Dashboard() {
 
                             {/* SUBPANEL 3B: TEMPERATURAS, PRESIONES Y DESGASTE DE LAS 4 RUEDAS */}
                             <ErrorBoundary serviceName="Neumáticos & Frenos Widget">
-                                <div className="bg-neutral-900 rounded-lg p-5 border border-neutral-800 shadow-lg flex-1 flex flex-col justify-between">
-                                    <div className="flex justify-between items-center mb-3 border-b border-neutral-800 pb-2">
+                                <div className="bg-neutral-900 rounded-lg p-3.5 sm:p-5 border border-neutral-800 shadow-lg flex-1 flex flex-col justify-between">
+                                    <div className="flex flex-wrap justify-between items-center gap-1.5 mb-3 border-b border-neutral-800 pb-2">
                                         <h2 className="text-xs uppercase tracking-widest text-neutral-400 font-mono">
                                             Neumáticos & Frenos
                                         </h2>
@@ -1475,7 +1481,7 @@ export default function Dashboard() {
                                         </span>
                                     </div>
 
-                                    <div className="grid grid-cols-2 gap-3">
+                                    <div className="grid grid-cols-2 gap-2 sm:gap-3">
                                         <WheelCard
                                             label="FL (Del. Izq)"
                                             tyreTemp={tel.tyre_temps_c?.fl}
@@ -1510,9 +1516,9 @@ export default function Dashboard() {
                         </div>
 
                         {/* PANEL 4: CRONOMETRAJE Y SECTORES (12 Columnas) */}
-                        <div className="lg:col-span-12">
+                        <div className="lg:col-span-12 min-w-0">
                             <ErrorBoundary serviceName="Cronometraje y Sectores">
-                                <div className="bg-neutral-900 rounded-lg p-5 border border-neutral-800 shadow-lg flex flex-col md:flex-row gap-6">
+                                <div className="bg-neutral-900 rounded-lg p-3.5 sm:p-5 border border-neutral-800 shadow-lg flex flex-col md:flex-row gap-4 sm:gap-6">
                                     <div className="flex-1 flex flex-col justify-center border-b md:border-b-0 md:border-r border-neutral-800 pb-4 md:pb-0 pr-0 md:pr-4">
                                         <div className="flex justify-between items-center mb-2">
                                             <h2 className="text-xs uppercase tracking-widest text-neutral-400 font-mono">
@@ -1522,7 +1528,7 @@ export default function Dashboard() {
                                                 VUELTA #{tel.current_lap ?? 0}
                                             </span>
                                         </div>
-                                        <div className="text-5xl font-mono font-bold text-white tracking-tighter">
+                                        <div className="text-3xl sm:text-4xl lg:text-5xl font-mono font-bold text-white tracking-tighter">
                                             {formatTime(tel.current_lap_time)}
                                         </div>
                                         <div className="text-xs font-mono text-neutral-500 mt-2 flex items-center gap-3">

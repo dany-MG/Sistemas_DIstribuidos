@@ -161,14 +161,14 @@ export default function TrackMapWidget({
             : null;
 
     return (
-        <div className="bg-neutral-900 rounded-lg p-5 border border-neutral-800 shadow-lg flex flex-col justify-between">
-            <div className="flex justify-between items-center mb-2 gap-2">
-                <div className="flex items-center gap-2">
+        <div className="bg-neutral-900 rounded-lg p-3.5 sm:p-5 border border-neutral-800 shadow-lg flex flex-col justify-between min-w-0">
+            <div className="flex flex-wrap justify-between items-center mb-3 gap-2">
+                <div className="flex items-center gap-2 min-w-0">
                     <h2 className="text-xs uppercase tracking-widest text-neutral-400 font-mono">
                         Mapa GPS en Vivo
                     </h2>
                     <span
-                        className={`text-[9px] font-mono px-1.5 py-0.5 rounded border ${
+                        className={`text-[9px] font-mono px-1.5 py-0.5 rounded border shrink-0 ${
                             mapState.offline503
                                 ? 'bg-red-500/15 text-red-400 border-red-500/30 font-bold'
                                 : 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'
@@ -179,7 +179,7 @@ export default function TrackMapWidget({
                     </span>
                 </div>
 
-                <div className="flex items-center gap-1.5">
+                <div className="flex flex-wrap items-center gap-1.5">
                     <span className="text-xs font-mono text-purple-400 bg-purple-500/10 border border-purple-500/20 px-2 py-0.5 rounded truncate max-w-[145px]">
                         {trackName || 'DESCONOCIDO'}
                     </span>

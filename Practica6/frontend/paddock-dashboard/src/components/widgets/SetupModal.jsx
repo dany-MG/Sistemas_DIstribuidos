@@ -75,11 +75,11 @@ export default function SetupModal({
     }, [setupState.setupData, filter]);
 
     return (
-        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-xs flex items-center justify-center p-4">
-            <div className="bg-neutral-900 border border-neutral-700 rounded-lg max-w-4xl w-full max-h-[82vh] flex flex-col shadow-2xl">
-                <div className="p-4 border-b border-neutral-800 flex justify-between items-center gap-4">
-                    <div>
-                        <div className="flex items-center gap-2 text-[10px] font-mono uppercase tracking-widest text-neutral-400">
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-xs flex items-center justify-center p-2 sm:p-4">
+            <div className="bg-neutral-900 border border-neutral-700 rounded-lg max-w-4xl w-full max-h-[92vh] sm:max-h-[82vh] flex flex-col shadow-2xl overflow-hidden">
+                <div className="p-3 sm:p-4 border-b border-neutral-800 flex flex-wrap justify-between items-center gap-2 sm:gap-4">
+                    <div className="min-w-0 flex-1">
+                        <div className="flex flex-wrap items-center gap-1.5 sm:gap-2 text-[10px] font-mono uppercase tracking-widest text-neutral-400">
                             <span>Ingeniería de Pista</span>
                             <span>•</span>
                             <span
@@ -92,13 +92,13 @@ export default function SetupModal({
                                 {setupState.offline503 ? 'ms-car-setup OFFLINE (503)' : 'ms-car-setup ONLINE'}
                             </span>
                         </div>
-                        <h3 className="text-lg font-bold text-white font-mono">
+                        <h3 className="text-sm sm:text-lg font-bold text-white font-mono break-words mt-0.5">
                             CAR SETUP — {carName || 'VEHÍCULO'} ({entries.length} parámetros)
                         </h3>
                     </div>
                     <button
                         onClick={onClose}
-                        className="px-3 py-1 rounded bg-neutral-800 hover:bg-neutral-700 text-neutral-200 text-xs font-mono border border-neutral-700 cursor-pointer"
+                        className="px-3 py-1.5 sm:py-1 rounded bg-neutral-800 hover:bg-neutral-700 text-neutral-200 text-xs font-mono border border-neutral-700 cursor-pointer shrink-0"
                     >
                         CERRAR [ESC]
                     </button>

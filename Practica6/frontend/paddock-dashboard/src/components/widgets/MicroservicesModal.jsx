@@ -110,40 +110,40 @@ export default function MicroservicesModal({ apiBaseUrl, onServiceToggled, onClo
     const onlineCount = services.filter((s) => s.enabled).length;
 
     return (
-        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-xs flex items-center justify-center p-4">
-            <div className="bg-neutral-900 border border-neutral-700 rounded-lg max-w-5xl w-full max-h-[88vh] flex flex-col shadow-2xl font-mono">
-                <div className="p-4 border-b border-neutral-800 flex flex-wrap justify-between items-center gap-4">
-                    <div>
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-xs flex items-center justify-center p-2 sm:p-4">
+            <div className="bg-neutral-900 border border-neutral-700 rounded-lg max-w-5xl w-full max-h-[92vh] sm:max-h-[88vh] flex flex-col shadow-2xl font-mono overflow-hidden">
+                <div className="p-3 sm:p-4 border-b border-neutral-800 flex flex-wrap justify-between items-center gap-3 sm:gap-4">
+                    <div className="min-w-0">
                         <div className="text-[10px] uppercase tracking-widest text-emerald-400">
                             Arquitectura de Software • Aislamiento de Fallos (Bulkhead & Circuit Breaker)
                         </div>
-                        <h3 className="text-lg font-bold text-white">
+                        <h3 className="text-sm sm:text-lg font-bold text-white mt-0.5">
                             ORQUESTADOR DE MICROSERVICIOS ATÓMICOS ({onlineCount}/{services.length} ACTIVOS)
                         </h3>
                     </div>
-                    <div className="flex gap-2">
+                    <div className="flex flex-wrap gap-2 w-full sm:w-auto">
                         <button
                             onClick={refreshStatus}
-                            className="px-3 py-1 rounded bg-blue-500/20 hover:bg-blue-500/30 text-blue-300 text-xs border border-blue-500/40 cursor-pointer"
+                            className="flex-1 sm:flex-initial px-3 py-1.5 sm:py-1 rounded bg-blue-500/20 hover:bg-blue-500/30 text-blue-300 text-xs border border-blue-500/40 cursor-pointer"
                         >
                             REFRESCAR ESTADO
                         </button>
                         <button
                             onClick={onClose}
-                            className="px-3 py-1 rounded bg-neutral-800 hover:bg-neutral-700 text-neutral-200 text-xs border border-neutral-700 cursor-pointer"
+                            className="flex-1 sm:flex-initial px-3 py-1.5 sm:py-1 rounded bg-neutral-800 hover:bg-neutral-700 text-neutral-200 text-xs border border-neutral-700 cursor-pointer"
                         >
                             CERRAR
                         </button>
                     </div>
                 </div>
 
-                <div className="px-4 py-2.5 bg-neutral-950 border-b border-neutral-800 text-[11px] text-neutral-400">
+                <div className="px-3 sm:px-4 py-2 sm:py-2.5 bg-neutral-950 border-b border-neutral-800 text-[11px] text-neutral-400">
                     Puedes simular la caída individual (<code className="text-red-400">HTTP 503</code>) de cualquier
                     microservicio (por ejemplo, <strong className="text-white">ms-track-map</strong>) para comprobar que
                     el resto de la PWA continúa funcionando sin interrupción.
                 </div>
 
-                <div className="p-4 overflow-y-auto grid grid-cols-1 md:grid-cols-2 gap-3.5 text-xs">
+                <div className="p-3 sm:p-4 overflow-y-auto grid grid-cols-1 md:grid-cols-2 gap-3 sm:gap-3.5 text-xs">
                     {services.map((ms) => {
                         const isOnline = Boolean(ms.enabled);
                         return (
